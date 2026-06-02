@@ -1,0 +1,5 @@
+FROM rust:slim
+WORKDIR /app
+COPY . .
+RUN cargo build --workspace && \
+    (cargo tree | grep -E '(-sys v|rocksdb|lmdb|ring v)' && echo "FFI LEAK" && exit 1 || echo "CLEAN")

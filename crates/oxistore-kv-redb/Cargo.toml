@@ -1,0 +1,22 @@
+[package]
+name = "oxistore-kv-redb"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "redb backend for OxiStore — Pure Rust embedded key-value store"
+categories = ["database-implementations"]
+keywords = ["redb", "kv-store", "storage", "pure-rust", "oxistore"]
+
+[dependencies]
+oxistore-core.workspace = true
+redb.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "redb_ops"
+harness = false

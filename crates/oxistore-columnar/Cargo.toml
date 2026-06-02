@@ -1,0 +1,28 @@
+[package]
+name = "oxistore-columnar"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "OxiStore columnar storage: Parquet read/write via Arrow RecordBatch with OxiARC compression"
+categories = ["database-implementations"]
+keywords = ["parquet", "arrow", "columnar", "pure-rust", "cooljapan"]
+
+[features]
+default = []
+columnar = []
+## Enable OxiARC DEFLATE payload-level compression for write_to_bytes/read_from_bytes.
+## Uses the COOLJAPAN Pure Rust stack — never links flate2, zstd, brotli, snap, or lz4.
+compress = ["dep:oxiarc-deflate"]
+
+[dependencies]
+arrow = { workspace = true }
+bytes = { workspace = true }
+parquet = { workspace = true }
+oxiarc-deflate = { workspace = true, optional = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+proptest = { workspace = true }

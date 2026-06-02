@@ -1,0 +1,22 @@
+[package]
+name = "oxistore-kv-sled"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "sled backend for OxiStore — Pure Rust embedded key-value store"
+categories = ["database-implementations"]
+keywords = ["sled", "kv-store", "storage", "pure-rust", "oxistore"]
+
+[dependencies]
+oxistore-core.workspace = true
+sled.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "sled_ops"
+harness = false

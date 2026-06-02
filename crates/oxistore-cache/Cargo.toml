@@ -1,0 +1,29 @@
+[package]
+name = "oxistore-cache"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "OxiStore cache eviction primitives: Pure-Rust LRU and full ARC (Adaptive Replacement Cache)"
+categories = ["algorithms", "data-structures"]
+keywords = ["lru", "arc", "cache", "eviction", "cooljapan"]
+
+[features]
+default = []
+cache = []
+blob = ["dep:oxistore-blob", "dep:bytes", "dep:async-trait", "dep:tokio"]
+
+[dependencies]
+hashlink = { workspace = true }
+oxistore-core = { workspace = true }
+ahash = { workspace = true }
+oxistore-blob = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+async-trait = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+proptest = { workspace = true }

@@ -1,0 +1,29 @@
+[package]
+name = "oxistore-encrypt"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Cell-level AEAD encryption decorator for OxiStore KV stores (XChaCha20-Poly1305)"
+categories = ["database-implementations", "cryptography"]
+keywords = ["kv-store", "encryption", "aead", "pure-rust", "cooljapan"]
+
+[features]
+default = []
+encrypt = []
+
+[dependencies]
+oxistore-core.workspace = true
+oxicrypto.workspace = true
+
+[dev-dependencies]
+oxistore-kv-redb.workspace = true
+oxistore-kv-sled.workspace = true
+proptest.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "encrypt_ops"
+harness = false

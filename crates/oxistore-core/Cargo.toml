@@ -1,0 +1,27 @@
+[package]
+name = "oxistore-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Core traits and error types for OxiStore — Pure Rust storage abstraction layer"
+categories = ["database-implementations", "filesystem"]
+keywords = ["kv-store", "storage", "pure-rust", "cooljapan", "oxistore"]
+
+[features]
+serde-typed = ["dep:serde", "dep:serde_json"]
+
+[dependencies]
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "dispatch"
+harness = false
+

@@ -1,0 +1,22 @@
+[package]
+name = "oxistore-kv-fjall"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "LSM-tree KV store backend for OxiStore via fjall (Pure Rust)"
+categories = ["database-implementations"]
+keywords = ["fjall", "lsm", "kv-store", "storage", "pure-rust"]
+
+[dependencies]
+oxistore-core.workspace = true
+fjall.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "write_heavy"
+harness = false

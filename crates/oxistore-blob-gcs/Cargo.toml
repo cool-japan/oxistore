@@ -1,0 +1,26 @@
+[package]
+name = "oxistore-blob-gcs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Google Cloud Storage BlobStore adapter for OxiStore (Pure Rust, OAuth2 RS256 JWT)"
+keywords = ["gcs", "google-cloud", "storage", "blob", "pure-rust"]
+categories = ["database", "api-bindings"]
+
+[dependencies]
+oxistore-blob = { workspace = true }
+oxistore-core = { workspace = true }
+oxihttp-client = { workspace = true }
+oxicrypto-sig = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = { workspace = true }
+sha2 = { workspace = true }
+bytes = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util"] }

@@ -1,0 +1,24 @@
+[package]
+name = "oxistore-blob"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "OxiStore blob storage: BlobStore trait + local/memory backends"
+categories = ["filesystem", "database-implementations"]
+keywords = ["blob", "storage", "pure-rust", "cooljapan", "oxistore"]
+
+[features]
+default = []
+blob = []
+
+[dependencies]
+bytes = { workspace = true }
+tokio = { workspace = true, features = ["fs", "io-util", "sync"] }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

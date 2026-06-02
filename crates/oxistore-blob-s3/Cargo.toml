@@ -1,0 +1,33 @@
+[package]
+name = "oxistore-blob-s3"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "S3 BlobStore backend for the COOLJAPAN ecosystem (Pure-Rust, ring-free)."
+keywords = ["s3", "blob", "storage", "pure-rust", "aws"]
+categories = ["filesystem", "web-programming", "asynchronous", "network-programming"]
+
+[dependencies]
+oxistore-blob = { workspace = true }
+oxistore-core = { workspace = true }
+# aws-sigv4: default-features=false omits sign-http/http1 defaults only to avoid pulling http0-compat.
+# We re-enable sign-http+http1 explicitly.  No ring in this closure (verified 2026-05-27).
+aws-sigv4 = { workspace = true, default-features = false, features = ["sign-http", "http1"] }
+aws-credential-types = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+url = { workspace = true }
+quick-xml = { workspace = true }
+bytes = { workspace = true }
+tokio = { workspace = true, features = ["net", "io-util", "time"] }
+hmac = { workspace = true }
+async-trait = { workspace = true }
+# oxihttp-client: hyper-based HTTP client with connection pooling.
+# The `tls` feature is enabled workspace-wide so this handles both http:// and https:// URIs.
+oxihttp-client = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }

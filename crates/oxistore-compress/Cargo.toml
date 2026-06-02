@@ -1,0 +1,34 @@
+[package]
+name = "oxistore-compress"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Compression codec bridge for OxiStore — Pure Rust via OxiARC (oxiarc-deflate)"
+categories = ["database-implementations", "compression"]
+keywords = ["compression", "deflate", "parquet", "pure-rust", "cooljapan"]
+
+[features]
+default = []
+## Enable OxiARC-backed DEFLATE codec and Parquet Codec shim.
+## Never pulls in flate2, zstd, brotli, snap, or miniz_oxide.
+compress = ["dep:oxiarc-deflate", "dep:parquet", "dep:oxiarc-core"]
+
+[dependencies]
+oxistore-core = { workspace = true }
+oxiarc-deflate = { workspace = true, optional = true }
+oxiarc-core = { workspace = true, optional = true }
+parquet = { workspace = true, optional = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+oxiarc-core = { workspace = true }
+proptest = { workspace = true }
+
+[[bench]]
+name = "compress_ops"
+harness = false
+required-features = ["compress"]
+

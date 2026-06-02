@@ -1,0 +1,58 @@
+[package]
+name = "oxistore"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "OxiStore — Pure Rust storage facade: KV, columnar, and blob abstractions"
+categories = ["database-implementations"]
+keywords = ["kv-store", "storage", "pure-rust", "cooljapan", "oxistore"]
+
+[features]
+default = ["kv-redb"]
+kv-redb      = ["dep:oxistore-kv-redb"]
+kv-sled      = ["dep:oxistore-kv-sled"]
+kv-fjall     = ["dep:oxistore-kv-fjall"]
+columnar     = ["dep:oxistore-columnar"]
+cache        = ["dep:oxistore-cache"]
+blob         = ["dep:oxistore-blob"]
+encrypt      = ["dep:oxistore-encrypt"]
+compress     = ["dep:oxistore-compress", "oxistore-compress/compress"]
+serde-typed  = ["oxistore-core/serde-typed"]
+
+[dependencies]
+oxistore-core.workspace = true
+
+[dependencies.oxistore-kv-redb]
+workspace = true
+optional = true
+
+[dependencies.oxistore-kv-sled]
+workspace = true
+optional = true
+
+[dependencies.oxistore-kv-fjall]
+workspace = true
+optional = true
+
+[dependencies.oxistore-columnar]
+workspace = true
+optional = true
+
+[dependencies.oxistore-cache]
+workspace = true
+optional = true
+
+[dependencies.oxistore-blob]
+workspace = true
+optional = true
+
+[dependencies.oxistore-encrypt]
+workspace = true
+optional = true
+
+[dependencies.oxistore-compress]
+workspace = true
+optional = true
