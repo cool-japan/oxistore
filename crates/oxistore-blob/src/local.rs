@@ -64,6 +64,40 @@ impl LocalBlobStore {
         }
     }
 
+    /// Create a new store rooted at `base` and immediately remove any leftover
+    /// `*.tmp` files from a previous interrupted write session.
+    ///
+    /// This is useful when you want a clean state on application startup.
+    /// The scan is synchronous and recursive — for very large stores, prefer
+    /// running this in a blocking task.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` only if the base directory exists but cannot be read.
+    /// Missing base directory is silently ignored (nothing to clean up).
+    pub fn with_temp_cleanup(base: impl Into<PathBuf>) -> Result<Self, std::io::Error> {
+        let base_path = base.into();
+        if base_path.exists() {
+            cleanup_tmp_files_sync(&base_path)?;
+        }
+        Ok(Self {
+            base: base_path,
+            verify_checksum: false,
+        })
+    }
+
+    /// Clean up leftover `*.tmp` files under `base` synchronously.
+    ///
+    /// Same as [`LocalBlobStore::with_temp_cleanup`] but on an existing instance.
+    /// Returns the number of temp files removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the directory cannot be read.
+    pub fn cleanup_temp_files(&self) -> Result<u64, std::io::Error> {
+        cleanup_tmp_files_sync(&self.base)
+    }
+
     /// Resolve a key to an absolute path, rejecting unsafe keys.
     fn resolve(&self, key: &str) -> Result<PathBuf, BlobError> {
         validate_key(key)?;
@@ -249,6 +283,35 @@ impl BlobStore for LocalBlobStore {
             Ok(metas)
         }
     }
+}
+
+/// Recursively remove all `*.tmp` files under `dir`.
+///
+/// Returns the total count of removed files.  Errors accessing individual
+/// entries are silently ignored (best-effort cleanup).
+fn cleanup_tmp_files_sync(dir: &std::path::Path) -> Result<u64, std::io::Error> {
+    let mut count = 0u64;
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e),
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let file_type = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        if file_type.is_dir() {
+            count += cleanup_tmp_files_sync(&path).unwrap_or(0);
+        } else if file_type.is_file()
+            && path.extension().is_some_and(|ext| ext == "tmp")
+            && std::fs::remove_file(&path).is_ok()
+        {
+            count += 1;
+        }
+    }
+    Ok(count)
 }
 
 /// Recursively walk `dir`, collecting relative key strings that start with `prefix`.

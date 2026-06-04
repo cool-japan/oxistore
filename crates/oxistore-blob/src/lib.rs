@@ -67,6 +67,15 @@ pub use error::BlobError;
 pub use local::LocalBlobStore;
 pub use memory::MemoryBlobStore;
 
+// ── Concrete impls: satisfy oxistore_core::BlobStore marker ─────────────────
+//
+// We cannot write `impl<T: BlobStore> oxistore_core::BlobStore for T {}` due to
+// the orphan rule — `oxistore_core::BlobStore` is a foreign trait.
+// Instead we implement the marker for each concrete type defined in this crate.
+
+impl oxistore_core::BlobStore for LocalBlobStore {}
+impl oxistore_core::BlobStore for MemoryBlobStore {}
+
 use bytes::Bytes;
 use std::future::Future;
 

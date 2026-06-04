@@ -12,6 +12,23 @@
 //! compression, keyspaces (column families), cross-keyspace snapshots, and
 //! write batches.
 //!
+//! # Pure Rust and COOLJAPAN Policy compliance
+//!
+//! **LZ4 compression is 100% Pure Rust** in fjall.  fjall bundles
+//! [`lz4_flex`](https://crates.io/crates/lz4_flex), a native Rust port of
+//! the LZ4 algorithm that contains no C, C++, or Fortran code and has no
+//! `build.rs` C-compilation step.  It does **not** link against `liblz4` or
+//! any system compression library.
+//!
+//! Verified in `fjall` 3.x `Cargo.toml`:
+//! - Dependency: `lz4_flex = "0.11"` (pure-Rust crate, no `*-sys` wrappers)
+//! - No `cc`, `cmake`, or FFI build scripts in the dependency tree
+//! - `#![forbid(unsafe_code)]` is not active in `lz4_flex` (SIMD acceleration
+//!   uses `unsafe`), but all unsafe is contained within Rust — no C boundary
+//!
+//! This satisfies the COOLJAPAN Pure Rust default-features policy: the default
+//! feature set of `oxistore-kv-fjall` is entirely C/FFI-free.
+//!
 //! # Snapshot model
 //!
 //! [`oxistore_core::KvStore::snapshot`] takes a `Database`-level snapshot via
@@ -40,4 +57,4 @@ mod error;
 mod store;
 
 pub use error::FjallStoreError;
-pub use store::{CompactionStrategyKind, FjallStore, FjallStoreBuilder};
+pub use store::{CompactionStrategyKind, FjallStore, FjallStoreBuilder, RateLimitedWriter};

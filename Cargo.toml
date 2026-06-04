@@ -17,7 +17,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.89"
 authors = ["COOLJAPAN OU (Team Kitasan)"]
@@ -26,22 +26,23 @@ repository = "https://github.com/cool-japan/oxistore"
 description = "OxiStore is the COOLJAPAN-blessed Pure Rust low-level storage layer: embedded key-value, columnar in-memory & on-disk, and blob storage abstraction (local fs + cloud)."
 
 [workspace.dependencies]
-oxistore-core = { path = "crates/oxistore-core", version = "0.1.0" }
-oxistore-encrypt = { path = "crates/oxistore-encrypt", version = "0.1.0" }
-oxistore-compress = { path = "crates/oxistore-compress", version = "0.1.0" }
+oxistore = { path = "crates/oxistore", version = "0.1.1" }
+oxistore-core = { path = "crates/oxistore-core", version = "0.1.1" }
+oxistore-encrypt = { path = "crates/oxistore-encrypt", version = "0.1.1" }
+oxistore-compress = { path = "crates/oxistore-compress", version = "0.1.1" }
 oxiarc-deflate = { version = "0.3.2" }
 oxiarc-core = { version = "0.3.2" }
-oxicrypto = { version = "0.1.0" }
-oxicrypto-sig = { version = "0.1.0" }
-oxistore-kv-redb = { path = "crates/oxistore-kv-redb", version = "0.1.0" }
-oxistore-kv-sled = { path = "crates/oxistore-kv-sled", version = "0.1.0" }
-oxistore-kv-fjall = { path = "crates/oxistore-kv-fjall", version = "0.1.0" }
-oxistore-columnar = { path = "crates/oxistore-columnar", version = "0.1.0" }
-oxistore-cache = { path = "crates/oxistore-cache", version = "0.1.0" }
-oxistore-blob = { path = "crates/oxistore-blob", version = "0.1.0" }
-oxistore-blob-azure = { path = "crates/oxistore-blob-azure", version = "0.1.0" }
-oxistore-blob-s3 = { path = "crates/oxistore-blob-s3", version = "0.1.0" }
-oxistore-blob-gcs = { path = "crates/oxistore-blob-gcs", version = "0.1.0" }
+oxicrypto = { version = "0.1.1" }
+oxicrypto-sig = { version = "0.1.1" }
+oxistore-kv-redb = { path = "crates/oxistore-kv-redb", version = "0.1.1" }
+oxistore-kv-sled = { path = "crates/oxistore-kv-sled", version = "0.1.1" }
+oxistore-kv-fjall = { path = "crates/oxistore-kv-fjall", version = "0.1.1" }
+oxistore-columnar = { path = "crates/oxistore-columnar", version = "0.1.1" }
+oxistore-cache = { path = "crates/oxistore-cache", version = "0.1.1" }
+oxistore-blob = { path = "crates/oxistore-blob", version = "0.1.1" }
+oxistore-blob-azure = { path = "crates/oxistore-blob-azure", version = "0.1.1" }
+oxistore-blob-s3 = { path = "crates/oxistore-blob-s3", version = "0.1.1" }
+oxistore-blob-gcs = { path = "crates/oxistore-blob-gcs", version = "0.1.1" }
 redb = { version = "4.1.0" }
 sled = { version = "0.34", default-features = false }
 fjall = { version = "3.1.4" }
@@ -50,7 +51,7 @@ arrow = { version = "58.3.0" }
 parquet = { version = "58.3.0", default-features = false, features = ["arrow", "experimental"] }
 hashlink = { version = "0.11" }
 bytes = { version = "1" }
-tokio = { version = "1", features = ["fs", "io-util", "sync", "rt"] }
+tokio = { version = "1", features = ["fs", "io-util", "sync", "rt", "rt-multi-thread", "macros", "time"] }
 sha2 = { version = "0.11.0", default-features = false }
 digest = { version = "0.11.3", default-features = false }
 hmac = { version = "0.13.0" }
@@ -62,7 +63,8 @@ quick-xml = { version = "0.40.1" }
 url = { version = "2.5.8" }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0" }
-oxihttp-client = { version = "0.1.0", features = ["tls"] }
+oxihttp-client = { version = "0.1.1", features = ["tls"] }
 hex = { version = "0.4" }
 proptest = { version = "1" }
 ahash = { version = "0.8" }
+oxisql-core = { path = "../oxisql/crates/oxisql-core", version = "0.1.0" }

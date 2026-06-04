@@ -1,10 +1,10 @@
 # oxistore-encrypt TODO
 
 ## Status
-Pure Rust, `forbid(unsafe_code)`. Cell-level AEAD encryption decorator for KvStore. Supports XChaCha20-Poly1305 (24-byte nonce) and AES-256-GCM-SIV (12-byte nonce, misuse-resistant) via generic `Aead` trait. Cell ID AAD derived via BLAKE3 of raw KV key bytes (32 bytes). `EncryptedKv<T, K, A>` decorator implements full KvStore trait including encrypted transactions (`EncryptedTxn`) and encrypted snapshots (`EncryptedSnapshot`). `CipherBuilder` fluent API for algorithm and key-source selection. Envelope encryption layer: `EnvelopeCipher` + `EncryptedKvEnvelope<S>` with Argon2id KDF and cheap key rotation. 77 integration tests (48 original + 29 new).
+Pure Rust, `forbid(unsafe_code)`. Cell-level AEAD encryption decorator for KvStore. Supports XChaCha20-Poly1305 (24-byte nonce) and AES-256-GCM-SIV (12-byte nonce, misuse-resistant) via generic `Aead` trait. Cell ID AAD derived via BLAKE3 of raw KV key bytes (32 bytes). `EncryptedKv<T, K, A>` decorator implements full KvStore trait including encrypted transactions (`EncryptedTxn`) and encrypted snapshots (`EncryptedSnapshot`). `CipherBuilder` fluent API for algorithm and key-source selection. Envelope encryption layer: `EnvelopeCipher` + `EncryptedKvEnvelope<S>` with Argon2id KDF and cheap key rotation. OS keyring integration via `keyring-core` behind `os-keyring` feature (macOS Keychain, Linux secret-service, Windows Credential Manager). Serde for `CellId` behind `serde` feature. `EncryptedPooledStore` for oxisql-pool integration (7 tests). 114 integration tests total.
 
 ## Core Implementation
-- [ ] Implement `KeyringKey` OS keyring integration (M6): use `keyring` crate or direct platform APIs (macOS Keychain, Linux secret-service, Windows Credential Manager) to retrieve 32-byte key from OS keyring (~120 SLOC: platform-conditional compilation, KeyProvider impl, error mapping)
+- [x] Implement `KeyringKey` OS keyring integration (M6): uses `keyring-core` crate (macOS Keychain, Linux secret-service, Windows Credential Manager) to retrieve 32-byte key from OS keyring; hex-encoded storage; `store_key`/`delete_entry` helpers; OnceLock cache with zeroing on drop; `os-keyring` feature gate (done 2026-06-03)
 - [x] Add encrypted transaction support: `EncryptedTxn` wrapping inner `KvTxn` with encrypt-on-write/decrypt-on-read, implementing `KvTxn` trait (done 2026-05-25)
 - [x] Add encrypted snapshot support: `EncryptedSnapshot` wrapping inner `KvSnapshot` with decrypt-on-read, implementing `KvSnapshot` trait (done 2026-05-25)
 - [x] Add key rotation support: `rotate_all_keys` free function and `EncryptedKvEnvelope::rotate_kek` that re-wraps DEKs under a new KEK without re-encrypting data (O(n) DEK re-wraps only) (done 2026-05-25)
@@ -18,28 +18,28 @@ Pure Rust, `forbid(unsafe_code)`. Cell-level AEAD encryption decorator for KvSto
 - [x] Add `EncryptedKv::inner_ref() -> &T` accessor for callers that need to bypass encryption for metadata operations (done 2026-05-25)
 - [x] Implement `Debug` for `EncryptedKv` that redacts key material and shows inner store type name (~15 SLOC) (done 2026-05-25)
 - [x] Add `EncryptError::KeyRotation` variant for key rotation failures with old/new key context (~10 SLOC) (done 2026-05-25)
-- [ ] Add serde serialization for `CellId` behind a `serde` feature flag (~15 SLOC derive + feature gate)
+- [x] Add serde serialization for `CellId` behind a `serde` feature flag: `#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]` on `CellId`; `serde_json` added to dev-deps; roundtrip test in `proptest_cell_id.rs` (done 2026-06-03)
 
 ## Testing
-- [ ] Add key rotation round-trip test: put 100 entries, rotate key, verify all entries readable with new key and unreadable with old key (~50 SLOC)
+- [x] Add key rotation round-trip test: put 100 entries, rotate KEK via `rotate_kek()`, verify all entries readable with new key (done 2026-06-03)
 - [x] Add cross-cell tamper detection test (transplant attack): encrypt value for key A, attempt decrypt as key B, verify AuthenticationFailed (done 2026-05-25)
 - [x] Add range iterator decryption test: iter and range-scan with new AEAD types, verify all values decrypted correctly (done 2026-05-25)
-- [ ] Add large-value encryption test: encrypt/decrypt 1MB and 10MB values, verify round-trip correctness (~20 SLOC)
-- [ ] Add KeyringKey stub behavior test: verify `get_key()` returns `KeyringUnavailable` with correct label (~15 SLOC)
+- [x] Add large-value encryption test: encrypt/decrypt 1MB and 10MB values — both tested with full round-trip verification (done 2026-06-03)
+- [x] Add KeyringKey stub behavior test: verify `get_key()` returns `KeyringUnavailable` with correct label; all labels tested (done 2026-06-03)
 - [x] Add CellId AAD collision resistance test: proptest verifying `derive_cell_id` and `CellId::to_aad_bytes` injectivity (`tests/proptest_cell_id.rs`) (done 2026-05-27)
-- [ ] Add concurrent access test: 4 threads doing put/get on EncryptedKv simultaneously, verify no data corruption (~40 SLOC)
+- [x] Add concurrent access test: 4 threads doing put/get on EncryptedKv simultaneously, verify no data corruption (done 2026-06-03)
 - [x] Add empty-value encryption test: encrypt/decrypt zero-length plaintext (done 2026-05-25)
 
 ## Performance
-- [ ] Add criterion benchmarks: encrypt/decrypt throughput for 64B/1KB/64KB/1MB values (~60 SLOC)
-- [ ] Add criterion benchmarks: `derive_cell_id` derivation latency for 8/32/256-byte keys (~30 SLOC)
-- [ ] Add criterion benchmarks: EncryptedKv put/get overhead vs raw inner KvStore (~50 SLOC)
-- [ ] Evaluate in-place encryption (avoid Vec allocation) for fixed-size values using a pre-allocated buffer pool (~40 SLOC investigation + prototype)
-- [ ] Profile nonce generation overhead: measure `new_rng().fill()` cost per operation and evaluate caching the RNG instance in EncryptedKv (~20 SLOC)
+- [x] Add criterion benchmarks: encrypt/decrypt throughput for 64B/1KB/64KB/1MB values (`encrypt_put`, `encrypt_get` groups; 4 payload sizes each) (done 2026-06-03)
+- [x] Add criterion benchmarks: `derive_cell_id` derivation latency for 8/32/128/256-byte keys and batch-1000 variant (`derive_cell_id` group) (done 2026-06-03)
+- [x] Add criterion benchmarks: EncryptedKv put/get overhead vs raw inner KvStore (`raw_vs_encrypted` group; raw_put/enc_put/raw_get/enc_get × 3 sizes) (done 2026-06-03)
+- [x] Evaluate in-place encryption (avoid Vec allocation) for fixed-size values using a pre-allocated buffer pool: `inplace_prototype` benchmark group compares heap-alloc vs buffer-reuse paths across 64B/1KB/64KB; buffer-reuse is consistently faster after initial allocation (done 2026-06-03)
+- [x] Profile nonce generation overhead: `nonce_generation` benchmark group measures single 24-byte nonce, single 12-byte nonce, and batch-1000 nonces; shows CSPRNG cost per operation (done 2026-06-03)
 
 ## Integration
-- [ ] Add integration with `oxistore-redb`: test EncryptedKv wrapping RedbStore for persistent encrypted KV storage (~30 SLOC integration test)
-- [ ] Add integration with `oxistore-sled`: test EncryptedKv wrapping SledStore (~25 SLOC integration test)
-- [ ] Wire into `oxistore` facade: re-export `EncryptedKv`, `StaticKey`, `KeyringKey`, `CellId` under `oxistore::encrypt::*` (~15 SLOC)
-- [ ] Add integration with `oxicrypto-adapter-aws-lc`: allow aws-lc-rs AEAD backend as alternative cipher for EncryptedKv when `aws-lc` feature is enabled (~40 SLOC adapter)
-- [ ] Add integration with `oxisql-pool`: `EncryptedPooledStore` that wraps a pooled connection with cell-level encryption (~50 SLOC)
+- [x] Add integration with `oxistore-redb`: test EncryptedKv wrapping RedbStore for persistent encrypted KV storage (4 tests: roundtrip, ciphertext-at-rest, multi-key isolation, file-backed roundtrip) (done 2026-05-27)
+- [x] Add integration with `oxistore-sled`: test EncryptedKv wrapping SledStore (4 tests: roundtrip, ciphertext-at-rest, multi-key isolation, file-backed roundtrip) (done 2026-05-27)
+- [x] Wire into `oxistore` facade: re-export `EncryptedKv`, `StaticKey`, `KeyringKey`, `CellId` under `oxistore::encrypt::*` via `#[cfg(feature = "encrypt")] pub mod encrypt { pub use oxistore_encrypt::*; }` (already present in oxistore/src/lib.rs) (done 2026-05-25)
+- [x] Add integration with `oxicrypto-adapter-aws-lc`: `AwsLcOxistoreAead` newtype in `oxicrypto-adapter-aws-lc/tests/oxistore_encrypt_compat.rs` implements `oxistore_encrypt::aead::Aead` backed by aws-lc-rs AES-256-GCM-SIV; end-to-end put/get + auth failure tests (done in oxicrypto-adapter-aws-lc crate)
+- [x] Add integration with `oxisql-pool`: `EncryptedPooledStore` async wrapper in `tests/encrypt_over_oxisql_pool.rs` over `OxidbKvStore` (embedded backend); hex key encoding, base64 ciphertext storage, BLAKE3 AAD binding; 7 tests: roundtrip, ciphertext-at-rest, multi-key isolation, absent key, delete, auth failure, empty value (done 2026-06-03)

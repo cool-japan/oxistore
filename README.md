@@ -16,9 +16,9 @@ The non-negotiable goal: a fresh `rust:slim` container running
 `cargo build --workspace --no-default-features` produces a working KV store
 with no `apt-get install` and no C toolchain.
 
-## Status: v0.1.0 — 2026-06-01
+## Status: v0.1.1 — 2026-06-04
 
-All milestones M0–M5 are complete. **755 tests passing** across 13 crates.
+All milestones M0–M5 are complete. **999 tests passing** across 13 crates.
 25 433 lines of Rust code.
 
 | Milestone | Description | Status |
@@ -54,7 +54,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxistore = "0.1.0"
+oxistore = "0.1.1"
 ```
 
 Basic key-value operations:

@@ -253,6 +253,117 @@ fn bench_snapshot_creation(c: &mut Criterion) {
 }
 
 // --------------------------------------------------------------------------
+// Transaction commit latency: single key vs batch
+// --------------------------------------------------------------------------
+
+fn bench_txn_commit_latency(c: &mut Criterion) {
+    let mut group = c.benchmark_group("redb_txn_commit_latency");
+
+    // Single-key transaction commit
+    group.bench_function("single_key_commit", |b| {
+        let store = RedbStore::open_in_memory().expect("bench open");
+        b.iter(|| {
+            let mut txn = store.transaction().expect("begin txn");
+            txn.put(b"txn_key", b"txn_value").expect("txn put");
+            txn.commit().expect("commit");
+        });
+    });
+
+    // Batch of 100 keys in one transaction
+    group.throughput(criterion::Throughput::Elements(100));
+    group.bench_function("100_key_txn_commit", |b| {
+        let store = RedbStore::open_in_memory().expect("bench open");
+        let keys: Vec<Vec<u8>> = (0u64..100).map(make_key).collect();
+        let vals: Vec<Vec<u8>> = (0u64..100).map(make_value).collect();
+        b.iter(|| {
+            let mut txn = store.transaction().expect("begin txn");
+            for (k, v) in keys.iter().zip(vals.iter()) {
+                txn.put(k, v).expect("txn put");
+            }
+            txn.commit().expect("commit");
+        });
+    });
+
+    group.finish();
+}
+
+// --------------------------------------------------------------------------
+// Memory / snapshot materialization profile
+// --------------------------------------------------------------------------
+
+/// Benchmark snapshot creation latency at various store sizes.
+/// This documents how snapshot() (which is O(1) in redb — just begins a
+/// ReadTransaction) scales relative to the number of keys.
+fn bench_snapshot_size_scaling(c: &mut Criterion) {
+    let mut group = c.benchmark_group("redb_snapshot_size_scaling");
+
+    for n in [100u64, 1_000, 10_000] {
+        group.bench_with_input(criterion::BenchmarkId::from_parameter(n), &n, |b, &n| {
+            let store = RedbStore::open_in_memory().expect("bench open");
+            for i in 0..n {
+                store.put(&make_key(i), &make_value(i)).expect("seed");
+            }
+            b.iter(|| {
+                let snap = store.snapshot().expect("snapshot");
+                // Read one key to prevent the optimizer from eliding the snapshot.
+                let _ = snap.get(&make_key(0)).expect("snap get");
+            });
+        });
+    }
+
+    group.finish();
+}
+
+// --------------------------------------------------------------------------
+// Individual get/put/delete latency (microbenchmark)
+// --------------------------------------------------------------------------
+
+fn bench_single_op_latency(c: &mut Criterion) {
+    let mut group = c.benchmark_group("redb_single_op");
+
+    let store = RedbStore::open_in_memory().expect("bench open");
+    // Pre-seed a single key for get and delete benchmarks.
+    store.put(b"bench_key", b"bench_value").expect("seed");
+
+    group.bench_function("get_existing", |b| {
+        b.iter(|| {
+            let _ = store.get(b"bench_key").expect("get");
+        });
+    });
+
+    group.bench_function("get_missing", |b| {
+        b.iter(|| {
+            let _ = store
+                .get(b"definitely_not_present_key")
+                .expect("get missing");
+        });
+    });
+
+    group.bench_function("put_new_key", |b| {
+        let mut counter = 0u64;
+        b.iter(|| {
+            counter += 1;
+            let k = counter.to_be_bytes();
+            store.put(&k, b"v").expect("put");
+        });
+    });
+
+    group.bench_function("delete_existing", |b| {
+        b.iter_batched(
+            || {
+                store.put(b"del_target", b"v").expect("put for delete");
+            },
+            |()| {
+                store.delete(b"del_target").expect("delete");
+            },
+            criterion::BatchSize::SmallInput,
+        );
+    });
+
+    group.finish();
+}
+
+// --------------------------------------------------------------------------
 // Registration
 // --------------------------------------------------------------------------
 
@@ -265,5 +376,8 @@ criterion_group!(
     bench_prefix_scan,
     bench_batch_write,
     bench_snapshot_creation,
+    bench_txn_commit_latency,
+    bench_snapshot_size_scaling,
+    bench_single_op_latency,
 );
 criterion_main!(benches);

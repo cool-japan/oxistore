@@ -164,6 +164,22 @@ pub fn is_expired(expiry_millis: u64) -> bool {
 ///
 /// Implementations are required to be `Send + Sync`; interior mutability
 /// (e.g. via `Mutex`) is the backend's responsibility.
+///
+/// # Construction convention (`open_or_create`)
+///
+/// Each backend is expected to provide a method with the following signature
+/// convention (though it is not enforced by this trait because associated
+/// functions cannot be used through trait objects):
+///
+/// ```text
+/// impl BackendStore {
+///     pub fn open(path: impl AsRef<Path>) -> Result<Self, BackendError>;
+///     pub fn open_in_memory() -> Result<Self, BackendError>;  // for tests
+/// }
+/// ```
+///
+/// Use the `oxistore` facade's `open` and `open_in_memory` functions
+/// for backend-agnostic construction.
 pub trait KvStore: Send + Sync {
     /// Retrieve the value associated with `key`, or `None` if it is absent.
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError>;
@@ -503,8 +519,26 @@ pub trait KvSnapshot {
 /// Stub trait for M2+ columnar store — defined here so facade re-exports remain stable.
 pub trait ColumnarStore: Send + Sync {}
 
-/// Stub trait for M4+ blob store — defined here so facade re-exports remain stable.
+/// Marker trait for blob stores that is compatible with `oxistore-blob::BlobStore`.
+///
+/// This stub is defined here so that the `oxistore` facade can reference it
+/// without depending on the full `oxistore-blob` crate.  The canonical, fully
+/// featured async `BlobStore` trait (with `put`, `get`, `delete`, `head`,
+/// `list`, `exists`, `copy`, `rename`, CAS, streaming, etc.) is defined in
+/// the `oxistore-blob` crate.
+///
+/// Every type that implements `oxistore_blob::BlobStore` automatically
+/// satisfies this marker via a blanket impl in `oxistore-blob`.
+///
+/// # Design note
+///
+/// `oxistore-core` is intentionally dependency-free.  Adding async methods
+/// here would require `bytes` and `tokio`, which contradicts that policy.
+/// The full trait lives in `oxistore-blob`; this marker exists only to keep
+/// facade re-exports stable.
 pub trait BlobStore: Send + Sync {}
+
+// Intentionally no methods here — see `oxistore_blob::BlobStore` for the full API.
 
 /// Convenience alias: a heap-allocated [`KvStore`] with `'static` lifetime.
 ///

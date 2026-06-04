@@ -36,7 +36,13 @@ const TAG_LEN: usize = 16;
 ///
 /// The triple is serialised to 20 bytes of AAD on every encrypt/decrypt call,
 /// binding the ciphertext to its precise storage location.
+///
+/// When the `serde` feature is enabled, `CellId` implements
+/// [`serde::Serialize`] and [`serde::Deserialize`], allowing it to be stored
+/// in JSON configuration files, persisted alongside encrypted metadata, or
+/// transmitted over a network.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CellId {
     /// Table identifier.
     pub table_id: u64,

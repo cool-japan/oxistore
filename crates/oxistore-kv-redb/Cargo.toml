@@ -13,9 +13,13 @@ keywords = ["redb", "kv-store", "storage", "pure-rust", "oxistore"]
 [dependencies]
 oxistore-core.workspace = true
 redb.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
+oxistore = { path = "../oxistore" }
+oxistore-cache = { path = "../oxistore-cache" }
 
 [[bench]]
 name = "redb_ops"

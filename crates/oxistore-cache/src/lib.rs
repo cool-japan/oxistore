@@ -79,6 +79,14 @@ pub mod write_adapter;
 #[cfg(feature = "blob")]
 pub mod blob_cache;
 
+/// Caching adapter for hot Parquet row groups from `oxistore-columnar`.
+#[cfg(feature = "columnar")]
+pub mod columnar_cache;
+
+/// SQL query-result and prepared-plan caches backed by `oxisql-core` types.
+#[cfg(feature = "sql")]
+pub mod sql_cache;
+
 pub use arc::ArcCache;
 pub use bounded::BoundedCache;
 pub use builder::{CacheBuilder, CachePolicy};
@@ -92,6 +100,12 @@ pub use write_adapter::{CacheableKvStore, WriteBackCache, WriteThroughCache};
 
 #[cfg(feature = "blob")]
 pub use blob_cache::BlobCache;
+
+#[cfg(feature = "columnar")]
+pub use columnar_cache::ColumnarRowGroupCache;
+
+#[cfg(feature = "sql")]
+pub use sql_cache::{CachedQueryRunner, SqlPlanCache, SqlQueryCache};
 
 /// A cache entry that optionally expires at a given instant.
 ///
@@ -243,4 +257,103 @@ pub trait Cache<K, V> {
             self.put(k, v);
         }
     }
+}
+
+// ── Async helper ─────────────────────────────────────────────────────────────
+
+/// Look up `key` in `cache`, returning the cached value if present.
+///
+/// If the key is absent, the async closure `loader` is awaited to produce
+/// a value, which is then inserted into the cache and returned.
+///
+/// The closure is invoked **at most once** per call.  If the key is already
+/// present it is never called.
+///
+/// # Example
+///
+/// ```rust
+/// use oxistore_cache::{LruCache, Cache, get_or_insert_async};
+/// use std::sync::Mutex;
+///
+/// # async fn example() {
+/// let cache = Mutex::new(LruCache::<u32, String>::new(4));
+/// let val = get_or_insert_async(
+///     &cache,
+///     42u32,
+///     || async { "computed".to_string() },
+/// ).await;
+/// assert_eq!(val, "computed");
+/// # }
+/// ```
+pub async fn get_or_insert_async<K, V, C, F, Fut>(
+    cache: &std::sync::Mutex<C>,
+    key: K,
+    loader: F,
+) -> V
+where
+    K: Eq + std::hash::Hash + Clone,
+    V: Clone,
+    C: Cache<K, V>,
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = V>,
+{
+    // Fast path: key already in cache.
+    {
+        let mut guard = cache.lock().expect("cache mutex poisoned");
+        if let Some(v) = guard.get(&key) {
+            return v.clone();
+        }
+    }
+    // Slow path: key absent — await the loader outside the lock.
+    let value = loader().await;
+    {
+        let mut guard = cache.lock().expect("cache mutex poisoned");
+        // Double-check in case another task inserted the key while we waited.
+        if let Some(existing) = guard.peek(&key) {
+            return existing.clone();
+        }
+        guard.put(key, value.clone());
+    }
+    value
+}
+
+/// Look up `key` in a `tokio::sync::Mutex`-wrapped cache asynchronously.
+///
+/// Identical semantics to [`get_or_insert_async`] but uses an async
+/// `tokio::sync::Mutex` instead of `std::sync::Mutex`.
+///
+/// This variant is suitable when the cache is shared across `tokio` tasks
+/// that run on a multi-threaded executor and cannot use a synchronous lock.
+///
+/// Requires the `async-helpers` feature flag.
+#[cfg(feature = "async-helpers")]
+pub async fn get_or_insert_async_tokio<K, V, C, F, Fut>(
+    cache: &tokio::sync::Mutex<C>,
+    key: K,
+    loader: F,
+) -> V
+where
+    K: Eq + std::hash::Hash + Clone,
+    V: Clone,
+    C: Cache<K, V>,
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = V>,
+{
+    // Fast path: key already in cache (async lock, no blocking).
+    {
+        let mut guard = cache.lock().await;
+        if let Some(v) = guard.get(&key) {
+            return v.clone();
+        }
+    }
+    // Slow path: await the loader without holding the lock.
+    let value = loader().await;
+    {
+        let mut guard = cache.lock().await;
+        if let Some(existing) = guard.peek(&key) {
+            return existing.clone();
+        }
+        guard.put(key, value.clone());
+    }
+    value
 }

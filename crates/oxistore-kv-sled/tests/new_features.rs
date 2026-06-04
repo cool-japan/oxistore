@@ -1,5 +1,5 @@
 use oxistore_core::KvStore;
-use oxistore_kv_sled::{SledStore, SledStoreBuilder};
+use oxistore_kv_sled::{SledMode, SledStore, SledStoreBuilder};
 
 fn open_temp() -> SledStore {
     SledStore::open_temporary().expect("open failed")
@@ -353,4 +353,101 @@ fn test_sled_flush_sync_idempotent() {
         store.get(b"key").expect("get after double flush"),
         Some(b"value".to_vec())
     );
+}
+
+// ------------------------------------------------------------------
+// SledStoreBuilder mode + segment_size tests (new builder options)
+// ------------------------------------------------------------------
+
+#[test]
+fn sled_builder_mode_low_space() {
+    let dir = std::env::temp_dir().join(format!(
+        "oxistore-sled-mode-low-{}-{}",
+        std::process::id(),
+        rand_suffix_sled()
+    ));
+    let store = SledStoreBuilder::new()
+        .mode(SledMode::LowSpace)
+        .build(&dir)
+        .expect("build with LowSpace mode");
+
+    store.put(b"mode_key", b"mode_val").expect("put");
+    assert_eq!(
+        store.get(b"mode_key").expect("get"),
+        Some(b"mode_val".to_vec())
+    );
+}
+
+#[test]
+fn sled_builder_mode_high_throughput() {
+    let dir = std::env::temp_dir().join(format!(
+        "oxistore-sled-mode-high-{}-{}",
+        std::process::id(),
+        rand_suffix_sled()
+    ));
+    let store = SledStoreBuilder::new()
+        .mode(SledMode::HighThroughput)
+        .build(&dir)
+        .expect("build with HighThroughput mode");
+
+    store.put(b"ht_key", b"ht_val").expect("put");
+    assert_eq!(store.get(b"ht_key").expect("get"), Some(b"ht_val".to_vec()));
+}
+
+#[test]
+fn sled_builder_segment_size_power_of_two() {
+    let dir = std::env::temp_dir().join(format!(
+        "oxistore-sled-seg-{}-{}",
+        std::process::id(),
+        rand_suffix_sled()
+    ));
+    // 1 MiB segment — valid power-of-two in sled's accepted range.
+    let store = SledStoreBuilder::new()
+        .segment_size(1024 * 1024)
+        .build(&dir)
+        .expect("build with custom segment_size");
+
+    store.put(b"seg_key", b"seg_val").expect("put");
+    assert_eq!(
+        store.get(b"seg_key").expect("get"),
+        Some(b"seg_val".to_vec())
+    );
+}
+
+// ------------------------------------------------------------------
+// flush_with_reclaim tests
+// ------------------------------------------------------------------
+
+#[test]
+fn flush_with_reclaim_does_not_error() {
+    let store = SledStore::open_temporary().expect("open temporary");
+    for i in 0u32..20 {
+        let key = format!("reclaim_{i}");
+        store.put(key.as_bytes(), b"value").expect("put");
+    }
+    // Returns on-disk size; temporary dbs may return 0 on some platforms.
+    let _size = store.flush_with_reclaim().expect("flush_with_reclaim");
+}
+
+#[test]
+fn flush_with_reclaim_after_deletes() {
+    let dir = std::env::temp_dir().join(format!(
+        "oxistore-sled-reclaim-{}-{}",
+        std::process::id(),
+        rand_suffix_sled()
+    ));
+    let store = SledStore::open(&dir).expect("open");
+
+    // Write then delete 50 keys, then flush — GC should not panic.
+    for i in 0u32..50 {
+        let key = format!("gc_{i:04}");
+        store.put(key.as_bytes(), b"x").expect("put");
+    }
+    for i in 0u32..50 {
+        let key = format!("gc_{i:04}");
+        store.delete(key.as_bytes()).expect("delete");
+    }
+    let _size = store
+        .flush_with_reclaim()
+        .expect("flush_with_reclaim after deletes");
 }

@@ -16,7 +16,14 @@ fjall.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
+oxistore-kv-redb.workspace = true
+oxistore-kv-sled.workspace = true
+oxistore-core.workspace = true
 
 [[bench]]
 name = "write_heavy"
+harness = false
+
+[[bench]]
+name = "cross_backend"
 harness = false

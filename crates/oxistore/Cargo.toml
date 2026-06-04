@@ -56,3 +56,16 @@ optional = true
 [dependencies.oxistore-compress]
 workspace = true
 optional = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "facade_dispatch"
+harness = false
+required-features = ["kv-redb"]
+
+[[bench]]
+name = "cached_vs_uncached"
+harness = false
+required-features = ["kv-redb", "cache"]

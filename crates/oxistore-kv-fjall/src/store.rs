@@ -4,8 +4,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use fjall::{
-    config::{BloomConstructionPolicy, FilterPolicy, FilterPolicyEntry},
-    Config, Database, Keyspace, KeyspaceCreateOptions, PersistMode, Readable,
+    config::{BloomConstructionPolicy, CompressionPolicy, FilterPolicy, FilterPolicyEntry},
+    CompressionType, Config, Database, Keyspace, KeyspaceCreateOptions, PersistMode, Readable,
 };
 use oxistore_core::{
     expiry_epoch_millis, is_expired, KeysIter, KvSnapshot, KvStore, KvTxn, RangeIter, StoreError,
@@ -99,6 +99,67 @@ impl FjallStore {
             keyspace,
             ttl_keyspace,
             path: path.to_path_buf(),
+            txn_lock: Arc::new(Mutex::new(())),
+        })
+    }
+
+    /// Open an ephemeral fjall store in a unique temporary directory.
+    ///
+    /// The temporary directory is created under [`std::env::temp_dir()`] and
+    /// is **not** automatically removed on drop — call `destroy` via the
+    /// `oxistore` facade, or remove the directory manually.
+    ///
+    /// This is primarily intended for tests and ephemeral workloads.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FjallStoreError::Open`] if the temporary directory cannot be
+    /// created or the database cannot be opened.
+    pub fn open_in_memory() -> Result<Self, FjallStoreError> {
+        // fjall does not support a true in-memory backend; use a unique temp dir.
+        let dir = std::env::temp_dir().join(format!(
+            "oxistore_fjall_mem_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        Self::open(&dir)
+    }
+
+    /// Construct a [`FjallStore`] from an existing [`Database`] handle by
+    /// opening (or creating) the named keyspace as the primary data partition.
+    ///
+    /// This is useful when the caller already holds a `Database` reference and
+    /// wants to wrap it in a [`FjallStore`] without taking ownership of the
+    /// path.  The `"__ttl__"` keyspace is always opened alongside.
+    ///
+    /// `db_path` should be the directory path that was originally used when
+    /// opening `db`; it is recorded for [`KvStore::size_on_disk`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FjallStoreError::Open`] if the requested keyspace (or the
+    /// internal TTL keyspace) cannot be opened.
+    pub fn from_database(
+        db: Database,
+        keyspace_name: &str,
+        db_path: impl AsRef<Path>,
+    ) -> Result<Self, FjallStoreError> {
+        let keyspace = db
+            .keyspace(keyspace_name, KeyspaceCreateOptions::default)
+            .map_err(|e| FjallStoreError::Open(e.to_string()))?;
+
+        let ttl_keyspace = db
+            .keyspace("__ttl__", KeyspaceCreateOptions::default)
+            .map_err(|e| FjallStoreError::Open(e.to_string()))?;
+
+        Ok(Self {
+            db,
+            keyspace,
+            ttl_keyspace,
+            path: db_path.as_ref().to_path_buf(),
             txn_lock: Arc::new(Mutex::new(())),
         })
     }
@@ -273,6 +334,128 @@ impl FjallStore {
         }
         batch.commit().map_err(|e| StoreError::Other(e.to_string()))
     }
+
+    /// Insert or overwrite a key-value pair, returning the **previous** value
+    /// that was associated with the key (or `None` if the key was absent).
+    ///
+    /// Unlike [`KvStore::put`], this method performs a read-then-write cycle
+    /// within a single thread.  It is **not** atomic with respect to concurrent
+    /// writers — callers that need compare-and-swap semantics should use
+    /// [`KvStore::compare_and_swap`] instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if either the read or the write fails.
+    pub fn put_returning(&self, key: &[u8], value: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+        let prev = self.get(key)?;
+        self.put(key, value)?;
+        Ok(prev)
+    }
+
+    /// Remove a key, returning the **previous** value that was associated
+    /// with it (or `None` if the key was already absent).
+    ///
+    /// Like `put_returning`, this performs a read-then-delete cycle and is
+    /// **not** atomic with respect to concurrent writers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if either the read or the delete fails.
+    pub fn delete_returning(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+        let prev = self.get(key)?;
+        if prev.is_some() {
+            self.delete(key)?;
+        }
+        Ok(prev)
+    }
+
+    /// Apply a write-rate limit to subsequent writes by inserting a small sleep
+    /// between every `writes_per_period` individual `put` calls.
+    ///
+    /// fjall's own LSM engine does **not** expose a built-in write-rate-limiter
+    /// API in version 3.x.  This helper provides a *software-level* token-bucket
+    /// approximation: callers call `rate_limited_put` via [`FjallStore::rate_limiter`] instead of
+    /// the raw [`KvStore::put`] to honour the configured limit.
+    ///
+    /// Returns a [`RateLimitedWriter`] that wraps `self` and enforces the limit.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use oxistore_kv_fjall::FjallStore;
+    /// # use std::time::Duration;
+    /// let store = FjallStore::open_in_memory().unwrap();
+    /// let writer = store.rate_limiter(500, Duration::from_secs(1));
+    /// writer.put(b"k", b"v").unwrap();
+    /// ```
+    #[must_use]
+    pub fn rate_limiter(
+        &self,
+        writes_per_period: u64,
+        period: std::time::Duration,
+    ) -> RateLimitedWriter<'_> {
+        RateLimitedWriter {
+            store: self,
+            writes_per_period,
+            period,
+            counter: 0,
+        }
+    }
+}
+
+// ------------------------------------------------------------------
+// RateLimitedWriter — software token-bucket write rate limiter
+// ------------------------------------------------------------------
+
+/// A thin wrapper around [`FjallStore`] that enforces a software-level
+/// write rate limit.
+///
+/// After every `writes_per_period` calls to [`RateLimitedWriter::put`] the
+/// writer sleeps for `period` milliseconds to approximate the target
+/// throughput.  Because fjall does not expose a native write-rate-limiter in
+/// its 3.x API, this is a best-effort approximation at the application layer.
+///
+/// Obtain an instance via [`FjallStore::rate_limiter`].
+pub struct RateLimitedWriter<'a> {
+    store: &'a FjallStore,
+    /// Number of writes allowed per `period` before a sleep is inserted.
+    writes_per_period: u64,
+    /// Duration of the sleep inserted after every `writes_per_period` writes.
+    period: std::time::Duration,
+    /// Running count of writes issued since the last sleep (not persisted).
+    counter: u64,
+}
+
+impl RateLimitedWriter<'_> {
+    /// Write a key-value pair, sleeping if the rate limit has been reached.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any [`StoreError`] returned by the underlying store.
+    pub fn put(&mut self, key: &[u8], value: &[u8]) -> Result<(), StoreError> {
+        self.store.put(key, value)?;
+        self.counter += 1;
+        if self.writes_per_period > 0 && self.counter >= self.writes_per_period {
+            std::thread::sleep(self.period);
+            self.counter = 0;
+        }
+        Ok(())
+    }
+
+    /// Delete a key, counting towards the rate limit.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any [`StoreError`] returned by the underlying store.
+    pub fn delete(&mut self, key: &[u8]) -> Result<(), StoreError> {
+        self.store.delete(key)?;
+        self.counter += 1;
+        if self.writes_per_period > 0 && self.counter >= self.writes_per_period {
+            std::thread::sleep(self.period);
+            self.counter = 0;
+        }
+        Ok(())
+    }
 }
 
 /// Compute directory size recursively (helper for `size_on_disk`).
@@ -437,9 +620,20 @@ impl KvStore for FjallStore {
         }))
     }
 
+    /// Flush the write journal to durable storage.
+    ///
+    /// This implementation calls [`fjall::Database::persist`] with
+    /// [`PersistMode::SyncAll`], issuing a full fsync so that all previously
+    /// written data survives a crash.  This is equivalent to calling
+    /// [`FjallStore::persist_sync`] directly.
+    ///
+    /// Callers that want a best-effort flush without a full fsync should use
+    /// `db.persist(PersistMode::Buffer)` via [`FjallStore::raw_snapshot`] or
+    /// open the database with `manual_journal_persist = false` (the default),
+    /// which flushes on each commit automatically.
     fn flush(&self) -> Result<(), StoreError> {
         self.db
-            .persist(PersistMode::Buffer)
+            .persist(PersistMode::SyncAll)
             .map_err(|e| StoreError::Other(e.to_string()))
     }
 
@@ -702,10 +896,23 @@ impl KvSnapshot for FjallSnap<'_> {
             .map_err(|e| StoreError::Other(e.to_string()))
     }
 
+    /// Perform a range scan on this snapshot without eagerly collecting results.
+    ///
+    /// The returned iterator is **lazy**: rows are decoded one at a time as the
+    /// caller advances the iterator, rather than materialising all matching
+    /// rows into a `Vec` upfront.  This is significantly more memory-efficient
+    /// for wide scans over large keyspaces.
+    ///
+    /// The snapshot is kept alive for the iterator's lifetime via the
+    /// underlying `fjall::Iter`, which holds a reference to the snapshot
+    /// nonce.
     fn range<'a>(&'a self, lo: &[u8], hi: &[u8]) -> Result<RangeIter<'a>, StoreError> {
         let lo_owned = lo.to_vec();
         let hi_owned = hi.to_vec();
-        let pairs: Vec<oxistore_core::RangeItem> = self
+        // `fjall::Iter` is `Send + 'static`, so we can box it as `RangeIter<'a>`
+        // without any lifetime trouble — the snapshot nonce is held inside the
+        // `fjall::Iter` itself, keeping the GC watermark in place.
+        let iter = self
             .snap
             .range(self.keyspace, lo_owned..hi_owned)
             .map(|guard| {
@@ -713,9 +920,8 @@ impl KvSnapshot for FjallSnap<'_> {
                     .into_inner()
                     .map(|(k, v)| (k.to_vec(), v.to_vec()))
                     .map_err(|e| StoreError::Other(e.to_string()))
-            })
-            .collect();
-        Ok(Box::new(pairs.into_iter()))
+            });
+        Ok(Box::new(iter))
     }
 }
 
@@ -727,7 +933,7 @@ impl KvSnapshot for FjallSnap<'_> {
 ///
 /// Provides fine-grained control over the underlying fjall database:
 /// custom block-cache capacity, journal persistence mode, bloom filter
-/// bits-per-key, and compaction strategy.
+/// bits-per-key, compaction strategy, and compression type.
 ///
 /// # Example
 ///
@@ -753,6 +959,12 @@ pub struct FjallStoreBuilder {
     /// Name of the compaction strategy to apply to the default and TTL keyspaces.
     /// `None` means fjall's default (Leveled compaction).
     compaction_strategy_name: Option<CompactionStrategyKind>,
+    /// Compression type to use for data blocks.
+    ///
+    /// When `None`, fjall's default (`Lz4` when the `lz4` feature is enabled,
+    /// `None` otherwise) is used.  Set to [`CompressionType::None`] to
+    /// disable compression entirely.
+    data_block_compression: Option<CompressionType>,
 }
 
 /// Selects a named compaction strategy for [`FjallStoreBuilder`].
@@ -779,6 +991,7 @@ impl FjallStoreBuilder {
             journal_persist_mode: None,
             bloom_filter_bits_per_key: None,
             compaction_strategy_name: None,
+            data_block_compression: None,
         }
     }
 
@@ -827,6 +1040,42 @@ impl FjallStoreBuilder {
         self
     }
 
+    /// Configure the data-block compression type for the `"default"` and
+    /// `"__ttl__"` keyspaces.
+    ///
+    /// fjall supports per-keyspace data-block compression via the
+    /// `data_block_compression_policy` option.  Use this method to override
+    /// the fjall default:
+    ///
+    /// | Feature flag | fjall default                         |
+    /// |--------------|---------------------------------------|
+    /// | `lz4` (on)   | L0+L1: `None`, L2+: `Lz4`            |
+    /// | `lz4` (off)  | `None` (no compression)               |
+    ///
+    /// Setting [`CompressionType::None`] disables compression on all levels.
+    /// Setting [`CompressionType::Lz4`] enables LZ4 on all levels.
+    ///
+    /// LZ4 is a pure-Rust port (`lz4_flex`) bundled with fjall — it does not
+    /// introduce any C/FFI dependency and is compatible with the COOLJAPAN
+    /// Pure Rust policy.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use oxistore_kv_fjall::FjallStoreBuilder;
+    /// use fjall::CompressionType;
+    ///
+    /// let store = FjallStoreBuilder::new()
+    ///     .compression_type(CompressionType::None)  // disable compression
+    ///     .build("/tmp/no-compress")
+    ///     .unwrap();
+    /// ```
+    #[must_use]
+    pub fn compression_type(mut self, compression: CompressionType) -> Self {
+        self.data_block_compression = Some(compression);
+        self
+    }
+
     /// Build a [`FjallStore`] at `path`.
     ///
     /// The directory is created automatically if it does not exist.
@@ -854,6 +1103,7 @@ impl FjallStoreBuilder {
         // Build the keyspace options factory closure capturing our config.
         let bloom_bpk = self.bloom_filter_bits_per_key;
         let compaction_kind = self.compaction_strategy_name;
+        let compression = self.data_block_compression;
 
         let make_options = move || {
             let mut opts = KeyspaceCreateOptions::default();
@@ -868,6 +1118,10 @@ impl FjallStoreBuilder {
                 opts = opts.compaction_strategy(Arc::new(fjall::compaction::Leveled::default()));
             }
             // None → fjall's own default (Leveled) is used automatically.
+            if let Some(comp) = compression {
+                // Apply the requested compression to all levels uniformly.
+                opts = opts.data_block_compression_policy(CompressionPolicy::all(comp));
+            }
             opts
         };
 

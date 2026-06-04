@@ -381,3 +381,141 @@ fn test_fjall_batch_write_across_empty_is_noop() {
         .batch_write_across(&[])
         .expect("batch_write_across with no writes should succeed");
 }
+
+// ------------------------------------------------------------------
+// put_returning / delete_returning
+// ------------------------------------------------------------------
+
+#[test]
+fn put_returning_gives_previous_value() {
+    let store = open_temp();
+
+    // First put: key absent → should return None
+    let prev = store
+        .put_returning(b"retkey", b"first")
+        .expect("put_returning first");
+    assert!(
+        prev.is_none(),
+        "put_returning on absent key must return None"
+    );
+
+    // Overwrite: key present → should return old value
+    let prev2 = store
+        .put_returning(b"retkey", b"second")
+        .expect("put_returning second");
+    assert_eq!(
+        prev2.as_deref(),
+        Some(b"first".as_ref()),
+        "put_returning must return the previous value"
+    );
+
+    assert_eq!(
+        store.get(b"retkey").expect("get"),
+        Some(b"second".to_vec()),
+        "store must hold the new value"
+    );
+}
+
+#[test]
+fn delete_returning_gives_previous_value() {
+    let store = open_temp();
+
+    // Delete absent key: should return None without error
+    let prev = store
+        .delete_returning(b"absent")
+        .expect("delete_returning absent");
+    assert!(
+        prev.is_none(),
+        "delete_returning absent key must return None"
+    );
+
+    store.put(b"delkey", b"value").expect("put");
+
+    let prev2 = store
+        .delete_returning(b"delkey")
+        .expect("delete_returning present");
+    assert_eq!(
+        prev2.as_deref(),
+        Some(b"value".as_ref()),
+        "delete_returning must return the old value"
+    );
+
+    assert!(
+        store.get(b"delkey").expect("get after delete").is_none(),
+        "key must be absent after delete_returning"
+    );
+}
+
+// ------------------------------------------------------------------
+// from_database constructor
+// ------------------------------------------------------------------
+
+#[test]
+fn from_database_constructor_works() {
+    use fjall::{Config, Database, KeyspaceCreateOptions};
+
+    let dir = std::env::temp_dir().join(format!(
+        "oxistore-fjall-fromdb-{}-{}",
+        std::process::id(),
+        rand_suffix()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // Open a raw fjall Database, then wrap it in FjallStore.
+    let db = Database::open(Config::new(&dir)).expect("open raw db");
+    // Pre-populate a key using the raw DB.
+    let default_ks = db
+        .keyspace("default", KeyspaceCreateOptions::default)
+        .expect("raw keyspace");
+    default_ks
+        .insert(b"from_raw", b"raw_value")
+        .expect("raw insert");
+    drop(default_ks);
+
+    let store = FjallStore::from_database(db, "default", &dir).expect("from_database");
+
+    // The key inserted before wrapping must be visible.
+    assert_eq!(
+        store.get(b"from_raw").expect("get from_raw"),
+        Some(b"raw_value".to_vec()),
+        "FjallStore::from_database must see pre-existing data"
+    );
+
+    // Normal put/get must work.
+    store
+        .put(b"after_wrap", b"wrapped")
+        .expect("put after wrap");
+    assert_eq!(
+        store.get(b"after_wrap").expect("get after_wrap"),
+        Some(b"wrapped".to_vec()),
+        "post-wrap writes must be readable"
+    );
+}
+
+// ------------------------------------------------------------------
+// compression_type builder option
+// ------------------------------------------------------------------
+
+#[test]
+fn builder_with_compression_none_round_trips() {
+    use fjall::CompressionType;
+
+    let dir = std::env::temp_dir().join(format!(
+        "oxistore-fjall-compress-{}-{}",
+        std::process::id(),
+        rand_suffix()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let store = FjallStoreBuilder::new()
+        .compression_type(CompressionType::None)
+        .build(&dir)
+        .expect("build with CompressionType::None");
+
+    store.put(b"comp_key", b"comp_value").expect("put");
+    assert_eq!(
+        store.get(b"comp_key").expect("get"),
+        Some(b"comp_value".to_vec()),
+        "data must round-trip with compression disabled"
+    );
+}

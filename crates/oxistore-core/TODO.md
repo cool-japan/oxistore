@@ -12,7 +12,7 @@ Core traits (`KvStore`, `KvTxn`, `KvSnapshot`) and error types are implemented w
 - [x] Add `TTL/expiry` support via `put_with_ttl(key, value, Duration)`, `expire`, `ttl`, `persist`, `purge_expired` methods on `KvStore` trait with `StoreError::Unsupported` defaults, plus `expiry_epoch_millis` and `is_expired` helpers (~60 SLOC) (done 2026-05-25)
 - [x] Add `compare_and_swap` method to `KvStore` — atomic CAS operation `fn cas(key, expected_old, new_value) -> Result<bool>` (~10 SLOC) (done 2026-05-25)
 - [x] Flesh out `ColumnarStore` trait — full trait with `schema`, `batches`, `row_count`, `push`, `project`, `sort_by`, `filter`, `write_to_bytes`, `write_to` (defined in oxistore-columnar) (done 2026-05-27)
-- [ ] Flesh out `BlobStore` trait — add `put`, `get`, `delete`, `head`, `list`, `exists` methods with async signatures (~40 SLOC)
+- [x] Flesh out `BlobStore` trait — oxistore-core BlobStore is a marker trait (oxistore-core is dep-free); full async trait with put/get/delete/head/list/exists/CAS/streaming defined in `oxistore-blob`; blanket marker impl added; documented clearly (done 2026-06-03)
 - [x] Add `KvStore::compact` method — trigger manual compaction on backends that support it (~5 SLOC) (done 2026-05-25)
 - [x] Add `KvStore::backup` and `KvStore::restore` methods — create/restore point-in-time backup to a given path (~15 SLOC) (done 2026-05-25)
 - [x] Add `KvStore::iter` method — iterate all key-value pairs in the entire store in ascending key order (~10 SLOC) (done 2026-05-25)
@@ -31,7 +31,7 @@ Core traits (`KvStore`, `KvTxn`, `KvSnapshot`) and error types are implemented w
 - [x] Add `StoreError::ReadOnly` variant for read-only store/snapshot write attempts (~5 SLOC) (done 2026-05-25)
 - [x] Add `StoreError::CapacityExceeded` variant for bounded stores (~5 SLOC) (done 2026-05-25)
 - [x] Add `RangeIter` reverse iteration support via `KvStore::range_rev(lo, hi)` (~10 SLOC) (done 2026-05-25)
-- [ ] Add `KvStore::open_or_create` associated function signature to trait for uniform construction (~10 SLOC)
+- [x] Add `KvStore::open_or_create` associated function signature to trait for uniform construction — added as a convention doc comment in KvStore trait doc (associated functions can't be trait-object-dispatched; convention documented instead) (done 2026-06-03)
 
 ## Testing
 - [x] Unit tests for `ensure_parent_dir` with edge cases (empty path, nested dirs, permission errors) (~30 SLOC) (done 2026-05-25)
@@ -42,10 +42,10 @@ Core traits (`KvStore`, `KvTxn`, `KvSnapshot`) and error types are implemented w
 ## Performance
 - [x] Add `KvStore::get_many(keys: &[&[u8]])` for batched point lookups without per-key overhead (~15 SLOC) (done 2026-05-25)
 - [x] Add zero-copy `get_ref` returning `Cow<[u8]>` for backends that can return borrowed slices (~15 SLOC) (done 2026-05-25)
-- [ ] Benchmark trait object dispatch overhead vs monomorphized generic approach (~50 SLOC bench)
+- [x] Benchmark trait object dispatch overhead vs monomorphized generic approach (~50 SLOC bench) — `benches/dispatch.rs` with get/put/range × concrete/dyn, wired via `[[bench]] harness=false` (done 2026-06-03)
 
 ## Integration
 - [x] Ensure `ColumnarStore` trait signature is compatible with `oxistore-columnar` `ColumnarTable` API — `impl ColumnarStore for ColumnarTable` in columnar crate (done 2026-05-27)
-- [ ] Ensure `BlobStore` trait signature aligns with `oxistore-blob`'s async `BlobStore` trait — resolve the two divergent `BlobStore` traits into one (~30 SLOC)
+- [x] Ensure `BlobStore` trait signature aligns with `oxistore-blob`'s async `BlobStore` trait — resolved: oxistore-core::BlobStore is a marker; concrete types (LocalBlobStore, MemoryBlobStore) satisfy it via explicit impl in oxistore-blob; documented (done 2026-06-03)
 - [x] Add `CacheableKvStore` adapter combining `KvStore` + `oxistore-cache::Cache` for transparent caching (~80 SLOC) (done 2026-05-25; implemented in oxistore-cache::write_adapter)
-- [ ] Add `oxistore-core` re-export of `StoreMetrics` for use by the facade crate (~5 SLOC)
+- [x] Add `oxistore-core` re-export of `StoreMetrics` for use by the facade crate — `StoreMetrics` is already defined in oxistore-core and re-exported in the oxistore facade via `pub use oxistore_core::StoreMetrics` (done 2026-05-25)

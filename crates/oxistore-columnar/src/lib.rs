@@ -373,6 +373,36 @@ pub fn read_batches(path: &Path) -> Result<Vec<RecordBatch>, ColumnarError> {
     reader::read_batches(path)
 }
 
+/// Serialise `batches` to an in-memory Parquet byte buffer.
+///
+/// This is the in-memory counterpart of [`write_batches`].  All batches must
+/// share `schema`.  The output uses UNCOMPRESSED parquet-internal encoding with
+/// dictionary encoding and page-level statistics.
+///
+/// For OxiARC DEFLATE payload compression, build a [`ColumnarTable`] and call
+/// [`ColumnarTable::write_to_bytes`] after enabling `with_compression`.
+///
+/// # Errors
+///
+/// Propagates [`ColumnarError`] on serialisation failure.
+pub fn write_batches_to_bytes(
+    schema: Arc<Schema>,
+    batches: &[RecordBatch],
+) -> Result<Vec<u8>, ColumnarError> {
+    writer::write_batches_to_bytes(schema, batches)
+}
+
+/// Read all [`RecordBatch`]es from an in-memory Parquet byte buffer.
+///
+/// This is the in-memory counterpart of [`read_batches`].
+///
+/// # Errors
+///
+/// Propagates [`ColumnarError`] on Parquet deserialisation failure.
+pub fn read_batches_from_bytes(data: &[u8]) -> Result<Vec<RecordBatch>, ColumnarError> {
+    reader::read_batches_from_bytes(data).map(|t| t.batches)
+}
+
 /// Read all [`RecordBatch`]es from the Parquet file at `path`, selecting
 /// only the specified columns (projection pushdown / column pruning).
 ///

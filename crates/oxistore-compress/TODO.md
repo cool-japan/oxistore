@@ -14,7 +14,7 @@ Pure-Rust compression codec bridge backed exclusively by `oxiarc-deflate` (RFC 1
 
 ## API Improvements
 - [x] Add `CompressError::InvalidLevel(u32)` variant for out-of-range compression levels (done 2026-05-25)
-- [ ] Implement `From<CompressError>` for `StoreError` for cross-crate propagation (~10 SLOC)
+- [x] Implement `From<CompressError>` for `StoreError` for cross-crate propagation — already implemented in lib.rs (done 2026-05-25)
 - [x] Add `OxiArcCodec::new_with_level(level: u32)` constructor — validates range 0–9, returns `Err(InvalidLevel)` for out-of-range (done 2026-05-25)
 - [x] Expose codec metadata: `OxiArcCodec::algorithm_name() -> &'static str` and `OxiArcCodec::compression_level() -> Option<u8>` (~10 SLOC) (done 2026-05-25)
 - [x] Add `From<oxiarc_core::error::OxiArcError>` for `CompressError` — error conversion from OxiARC stack (done 2026-05-25)
@@ -31,16 +31,16 @@ Pure-Rust compression codec bridge backed exclusively by `oxiarc-deflate` (RFC 1
 - [x] `decompress_into` round-trip and appends to existing buffer (`round_trip.rs`) (done 2026-05-25)
 - [x] `new_with_level` returns Ok for valid levels 0–9; Err(InvalidLevel) for out-of-range values (`round_trip.rs`) (done 2026-05-25)
 - [x] `From<OxiArcError>` conversion produces `CompressError::Decompress` variant (`round_trip.rs`) (done 2026-05-25)
-- [ ] Property-based test: random byte slices (0–65536 bytes) survive round-trip via proptest (~30 SLOC)
-- [ ] Large-payload test: compress / decompress 10 MB buffer, verify round-trip and measure throughput (~20 SLOC)
-- [ ] Corrupted-input test: feed truncated compressed stream to `decompress`, expect `CompressError::Decompress` (~15 SLOC)
+- [x] Property-based test: random byte slices (0–65536 bytes) survive round-trip via proptest — added `random_bytes_round_trip` and `random_bytes_round_trip_level9` (done 2026-06-03)
+- [x] Large-payload test: compress / decompress 10 MB buffer, verify round-trip — both compressible and pseudo-random data tested (done 2026-06-03)
+- [x] Corrupted-input test: feed truncated compressed stream to `decompress`, expect `CompressError::Decompress` — `truncated_compressed_stream_fails` test added (done 2026-06-03)
 
 ## Performance
-- [ ] Criterion benchmark: compress/decompress throughput for 1 KB / 64 KB / 1 MB payloads at level 1 and level 6 (~40 SLOC)
-- [ ] Criterion benchmark: `OxiArcParquetCodec` shim overhead vs direct `OxiArcCodec` call (~20 SLOC)
-- [ ] Profile allocation pattern: measure number of `Vec` allocations per compress+decompress round-trip (~15 SLOC investigation)
+- [x] Criterion benchmark: compress/decompress throughput for 1 KB / 64 KB / 1 MB payloads at level 1 and level 6 — `bench_compress_roundtrip_level1` + `bench_compress_roundtrip_level6` + compress/decompress-only groups (done 2026-06-03)
+- [x] Criterion benchmark: `OxiArcParquetCodec` shim overhead vs direct `OxiArcCodec` call — `bench_codec_shim_overhead` group (inherent vs shim for both compress and decompress) (done 2026-06-03)
+- [x] Profile allocation pattern: measure number of `Vec` allocations per compress+decompress round-trip — `bench_allocation_pattern` group: documents 2-alloc (compress+decompress) vs 1-alloc (`decompress_into`) pattern (done 2026-06-03)
 
 ## Integration
 - [x] Wire OxiARC into `oxistore-columnar` — payload-level via `compress` feature in oxistore-columnar (done 2026-05-25)
-- [ ] Add `oxistore` facade re-export of `OxiArcCodec` under `oxistore::compress::*` (~10 SLOC)
-- [ ] Verify `oxistore-compress` is compile-time gated: `cargo build -p oxistore-compress` (no `--features compress`) must succeed with zero code enabled (~5 SLOC CI check)
+- [x] Add `oxistore` facade re-export of `OxiArcCodec` under `oxistore::compress::*` — `pub mod compress` in oxistore/src/lib.rs re-exports `OxiArcCodec` + `CompressError` behind the `compress` feature (done 2026-06-03)
+- [x] Verify `oxistore-compress` is compile-time gated: `cargo build -p oxistore-compress` (no `--features compress`) succeeds with zero code enabled; `cargo build -p oxistore-compress --features compress` enables the full API (done 2026-06-03)

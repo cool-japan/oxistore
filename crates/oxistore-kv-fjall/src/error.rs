@@ -12,6 +12,10 @@ pub enum FjallStoreError {
     Write(String),
     /// An error occurred while persisting the journal.
     Persist(String),
+    /// A compaction operation failed.
+    Compaction(String),
+    /// A write batch overflowed or exceeded an internal limit.
+    BatchOverflow(String),
 }
 
 impl std::fmt::Display for FjallStoreError {
@@ -21,6 +25,8 @@ impl std::fmt::Display for FjallStoreError {
             FjallStoreError::Read(s) => write!(f, "fjall read error: {s}"),
             FjallStoreError::Write(s) => write!(f, "fjall write error: {s}"),
             FjallStoreError::Persist(s) => write!(f, "fjall persist error: {s}"),
+            FjallStoreError::Compaction(s) => write!(f, "fjall compaction error: {s}"),
+            FjallStoreError::BatchOverflow(s) => write!(f, "fjall batch overflow: {s}"),
         }
     }
 }

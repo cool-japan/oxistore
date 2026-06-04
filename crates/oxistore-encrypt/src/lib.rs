@@ -85,7 +85,10 @@ pub mod keys;
 pub mod snapshot;
 pub mod txn;
 
-pub use aead::{derive_cell_id, Aead, AeadKind, AesGcmSiv256Aead, XChaCha20Poly1305Aead};
+pub use aead::{
+    decrypt_with_aead, derive_cell_id, encrypt_with_aead, Aead, AeadKind, AesGcmSiv256Aead,
+    XChaCha20Poly1305Aead,
+};
 pub use cell::{decrypt_cell, encrypt_cell, CellId, MIN_CIPHERTEXT_LEN};
 pub use cipher_builder::{AeadChoice, CipherBuilder};
 pub use decorator::EncryptedKv;

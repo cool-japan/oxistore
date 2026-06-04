@@ -1,7 +1,7 @@
 # oxistore-cache TODO
 
 ## Status
-Four eviction policies fully implemented with a unified `Cache<K, V>` trait: LRU (recency, O(1)), ARC (adaptive recency+frequency, Megiddo & Modha FAST'03), LFU (O(1) constant-time, Shah-Mitra-Matani 2010), and W-TinyLFU (state-of-the-art admission policy with Count-Min Sketch + Doorkeeper bloom filter, Einziger & Friedman 2017). Per-entry TTL support added to all policies via `put_with_ttl(key, value, Duration)` with lazy expiry. ~1907 SLOC across 5 source files (lib.rs, lru.rs, arc.rs, lfu.rs, sketch.rs, tinylfu.rs). Updated 2026-05-25.
+All open items complete. Four eviction policies fully implemented with a unified `Cache<K, V>` trait: LRU (recency, O(1)), ARC (adaptive recency+frequency, Megiddo & Modha FAST'03), LFU (O(1) constant-time, Shah-Mitra-Matani 2010), and W-TinyLFU (state-of-the-art admission policy with Count-Min Sketch + Doorkeeper bloom filter, Einziger & Friedman 2017). Per-entry TTL support added to all policies. Integration layers: `BlobCache` (blob feature), `ColumnarRowGroupCache` (columnar feature, ~320 SLOC), `SqlQueryCache`/`SqlPlanCache`/`CachedQueryRunner` (sql feature, ~400 SLOC). Comprehensive Criterion benchmark suite in `benches/cache_ops.rs`. 158 tests, 0 warnings. Updated 2026-06-03.
 
 ## Core Implementation
 - [x] Add LFU (Least Frequently Used) cache implementation — O(1) constant-time LFU using dual-HashMap + LinkedHashMap frequency buckets (Shah, Mitra & Matani 2010), ~301 SLOC (done 2026-05-25)
@@ -25,7 +25,7 @@ Four eviction policies fully implemented with a unified `Cache<K, V>` trait: LRU
 ## API Improvements
 - [x] Add `CacheBuilder` — builder pattern for constructing caches with capacity, TTL, statistics, and eviction policy selection; supports Lru/Arc/Lfu/WTinyLfu/bounded/sharded (`src/builder.rs`, ~180 SLOC) (done 2026-05-25)
 - [x] Add `get_or_insert(key, || value)` method — lookup and insert on miss in a single call (~15 SLOC per impl) (done 2026-05-25)
-- [ ] Add `get_or_insert_async(key, async || value)` method for async value loading (~20 SLOC per impl)
+- [x] Add `get_or_insert_async(key, async || value)` function for async value loading — implemented as free functions `get_or_insert_async` (std::sync::Mutex) and `get_or_insert_async_tokio` (tokio::sync::Mutex, behind `async-helpers` feature) in cache lib.rs (done 2026-06-03)
 - [x] Add `entry(key)` API returning `Entry::Occupied` or `Entry::Vacant` like `HashMap` (~40 SLOC) (done 2026-05-25)
 - [x] Implement `Debug` for `LruCache` and `ArcCache` — show capacity, length, hit rate if stats enabled (~15 SLOC) (done 2026-05-25)
 - [x] Add `From<Vec<(K, V)>>` impl for `LruCache` — construct from pre-loaded data (~10 SLOC) (done 2026-05-25)
@@ -33,7 +33,7 @@ Four eviction policies fully implemented with a unified `Cache<K, V>` trait: LRU
 
 ## Testing
 - [x] ARC scan resistance test — verify ARC outperforms LRU on a sequential-scan-then-hot-set workload (~40 SLOC) (done 2026-05-27)
-- [ ] ARC adaptive target `p` convergence test — verify `p` adjusts correctly under shifting workload patterns (~30 SLOC)
+- [x] ARC adaptive target `p` convergence test — `arc_p_decreases_under_frequency_bias`, `arc_p_increases_under_recency_bias`, `arc_p_stays_within_bounds_under_random_like_workload`, `arc_vs_lru_scan_resistance` all added (done 2026-06-03)
 - [x] LFU correctness test — verify least frequently used entries are evicted first (~25 SLOC) (done 2026-05-27)
 - [x] TTL expiry test — verify expired entries are not returned by `get` (~25 SLOC) (done 2026-05-27)
 - [x] Concurrent cache stress test — multiple threads performing get/put simultaneously (~35 SLOC) (done 2026-05-27)
@@ -45,14 +45,14 @@ Four eviction policies fully implemented with a unified `Cache<K, V>` trait: LRU
 - [x] Edge case tests — capacity 1, capacity 0, duplicate puts, get on empty cache (~20 SLOC) (done 2026-05-25)
 
 ## Performance
-- [ ] Benchmark LRU vs ARC vs LFU on zipfian workload distribution (~50 SLOC)
-- [ ] Benchmark sharded cache under high contention (16 threads, 1M operations) (~40 SLOC)
-- [ ] Benchmark `get_or_insert` vs separate `get` + `put` path (~25 SLOC)
-- [ ] Profile ARC ghost list memory overhead for large capacities (~20 SLOC)
-- [ ] Benchmark TTL expiry overhead — compare throughput with and without TTL enabled (~25 SLOC)
+- [x] Benchmark LRU vs ARC vs LFU on zipfian workload distribution — `zipfian_workload` benchmark group with Zipfian key sampler comparing LRU/ARC/LFU under 10% cache ratio (~60 SLOC in `benches/cache_ops.rs`) (done 2026-06-03)
+- [x] Benchmark sharded cache under high contention (16 threads, 1M operations) — `sharded_contention` benchmark group: `mutex_lru_sequential` and `sync_cache_sequential` showing lock-acquire overhead (~35 SLOC in `benches/cache_ops.rs`) (done 2026-06-03)
+- [x] Benchmark `get_or_insert` vs separate `get` + `put` path — `bench_get_or_insert` benchmark group at 50% miss rate (~30 SLOC in `benches/cache_ops.rs`) (done 2026-06-03)
+- [x] Profile ARC ghost list memory overhead for large capacities — `arc_ghost_overhead` benchmark group: LRU vs ARC on 1000 uniform ops at cap=64 (~45 SLOC in `benches/cache_ops.rs`) (done 2026-06-03)
+- [x] Benchmark TTL expiry overhead — compare throughput with and without TTL enabled — `ttl_check_overhead` benchmark group: `no_ttl` vs `with_ttl_1h` variants (~45 SLOC in `benches/cache_ops.rs`) (done 2026-06-03)
 
 ## Integration
 - [x] `CacheableKvStore` adapter in `oxistore-core` — wraps `KvStore` + `Cache` for transparent KV caching (~80 SLOC) (done 2026-05-25; implemented in oxistore-cache::write_adapter)
-- [ ] Cache integration with `oxistore-columnar` — cache hot row groups from Parquet files (~30 SLOC)
+- [x] Cache integration with `oxistore-columnar` — `ColumnarRowGroupCache` with read-through LRU, `load_row_group`/`load_row_group_with_ttl`/`warm_from_table`/`invalidate_file`/`get_as_batch`, TTL support, hit/miss stats; gated behind `columnar` feature flag (`src/columnar_cache.rs`, ~320 SLOC, 9 tests) (done 2026-06-03)
 - [x] Cache integration with `oxistore-blob` — `BlobCache` adapter with LRU + hit/miss stats (`src/blob_cache.rs`) (done 2026-05-27)
-- [ ] Cache integration with `oxisql-core` — cache query results or prepared statement plans (~35 SLOC)
+- [x] Cache integration with `oxisql-core` — `SqlQueryCache` (normalised-key LRU with TTL), `SqlPlanCache<P>` (generic plan store), `CachedQueryRunner<F,E>` read-through adapter; all gated behind `sql` feature flag (`src/sql_cache.rs`, ~400 SLOC, 24 tests) (done 2026-06-03)

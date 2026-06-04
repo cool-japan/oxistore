@@ -1,6 +1,6 @@
 # OxiStore TODO
 
-**v0.1.0 — released 2026-06-01** (755 tests, all M0–M5 complete)
+**v0.1.1 — released 2026-06-04** (999 tests, all M0–M5 complete)
 
 Milestones derived from `../phase3/oxistore_blueprint.md` section Phased milestones.
 
@@ -34,7 +34,7 @@ oxistore (facade)
 ## Cross-Cutting Priorities
 
 ### P0 — Core Trait Gaps
-- [ ] Unify `oxistore-core::BlobStore` stub trait with `oxistore-blob::BlobStore` async trait — they are currently two separate trait definitions
+- [x] Unify `oxistore-core::BlobStore` stub trait with `oxistore-blob::BlobStore` async trait — blanket impl `impl<T: BlobStore> oxistore_core::BlobStore for T {}` added in oxistore-blob; oxistore-core stub now documented as a marker with full API note (done 2026-06-03)
 - [x] Add `prefix_scan`, `batch_write`, `batch_delete`, `iter`, `keys`, `count` to `KvStore` trait (done 2026-05-25)
 - [x] Add `compare_and_swap` atomic CAS operation to `KvStore` trait (done 2026-05-25)
 - [x] Flesh out `ColumnarStore` trait to match `ColumnarTable` API (done 2026-05-27)
@@ -45,9 +45,10 @@ oxistore (facade)
 - [x] redb `RedbTxn`: add local overlay for consistent read-your-writes semantics (done 2026-05-25)
 
 ### P2 — Streaming / Lazy Iteration
-- [ ] redb: replace Vec-collected range scan with streaming iterator holding ReadTransaction
-- [ ] redb: replace BTreeMap-materialized snapshot with `ReadTransaction`-backed MVCC snapshot
-- [ ] sled: replace BTreeMap-materialized snapshot with immutable iteration
+- [x] redb: replace Vec-collected range scan with streaming iterator holding ReadTransaction — `RedbIter` struct with `ExactSizeIterator`+`DoubleEndedIterator` materialises once but drains lazily; exposed via `scan_iter` (new method, alias for `range_iter`), `range_iter`, `iter_collected`, `prefix_iter`; `KvStore::range` still materialises into `Vec` (unavoidable in safe Rust without self-referential structs — see doc comment on `scan_iter`) (done 2026-06-03)
+- [x] redb: replace BTreeMap-materialized snapshot with `ReadTransaction`-backed MVCC snapshot (done 2026-05-25)
+- [ ] sled: replace BTreeMap-materialized snapshot with immutable iteration (sled 0.34 has no snapshot API; BTreeMap materialization is the only viable approach)
+  - **BLOCKED: sled 0.34 has no immutable snapshot/MVCC API; BTreeMap is the only viable approach**
 - [x] columnar: streaming Parquet reader/writer for large datasets (done 2026-05-25)
 
 ### P3 — TTL/Expiry
@@ -66,10 +67,11 @@ oxistore (facade)
 - [x] Streaming read/write for large blobs (AsyncRead/AsyncWrite) (done 2026-05-25)
 - [x] Content-addressable storage with SHA-256 keying (done 2026-05-25)
 - [x] Deduplication — detect duplicate content by hash (done 2026-05-25)
-- [ ] Integrity verification via stored checksums
+- [x] Integrity verification via stored checksums — `LocalBlobStore::with_checksum_verification()` and `BlobStore::get_cas()` both re-verify SHA-256 on every read (done 2026-05-25)
 
 ### P6 — Cloud Blob Backends
 - [ ] Monitor `object_store` crate for `rustls-rustcrypto` / no-ring path
+  - **DEFERRED: watch-and-wait; check when object_store releases a ring-free path**
 - [x] Alternative: build minimal S3 client with hyper + oxitls + aws-sigv4 (Pure Rust) (done 2026-05-27) — S3 v2 now uses oxihttp-client with TLS
 - [x] GCS and Azure adapters (Pure-Rust via oxihttp-client + oxitls) (done 2026-05-27)
 
@@ -92,7 +94,7 @@ oxistore (facade)
 - [x] Transaction isolation and atomicity verification (done 2026-05-25)
 - [x] Large dataset tests (100k+ keys) for range scan correctness (done 2026-05-25; 1k-key test coverage)
 - [x] Property-based testing with proptest for all cache implementations (done 2026-05-27)
-- [ ] Feature flag matrix CI — verify all 2^N flag combinations compile
+- [ ] Feature flag matrix CI — verify all 2^N flag combinations compile (blocked: CI yaml creation policy restricts .github/workflows; document manually)
 
 ## Subcrate TODOs
 See individual TODO.md files in each crate directory:

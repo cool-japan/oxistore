@@ -13,9 +13,19 @@ keywords = ["sled", "kv-store", "storage", "pure-rust", "oxistore"]
 [dependencies]
 oxistore-core.workspace = true
 sled.workspace = true
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+
+[features]
+default = []
+typed = ["dep:serde", "dep:serde_json"]
 
 [dev-dependencies]
 criterion.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+oxistore = { path = "../oxistore", features = ["kv-sled"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
 
 [[bench]]
 name = "sled_ops"

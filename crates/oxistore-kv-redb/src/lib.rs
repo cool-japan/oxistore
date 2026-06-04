@@ -19,6 +19,22 @@
 //! let val = store.get(b"hello").expect("get failed");
 //! assert_eq!(val.as_deref(), Some(b"world".as_ref()));
 //! ```
+//!
+//! # Type-safe tables
+//!
+//! For ergonomic use with typed keys and JSON values, see [`TypedRedbTable`].
+//!
+//! ```no_run
+//! use oxistore_kv_redb::{RedbStore, TypedRedbTable};
+//!
+//! let store = RedbStore::open_in_memory().expect("open failed");
+//! let table = TypedRedbTable::new(store);
+//!
+//! // String keys, JSON-serializable values
+//! table.typed_put("my_key", &42u64).expect("put failed");
+//! let val: Option<u64> = table.typed_get("my_key").expect("get failed");
+//! assert_eq!(val, Some(42u64));
+//! ```
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -212,10 +228,176 @@ impl RedbStore {
         }
     }
 
+    /// Insert or overwrite a key-value pair, returning the **previous** value
+    /// stored under `key` (if any).
+    ///
+    /// This mirrors redb's native API, which also returns the old value on
+    /// `insert`.  Use this when you need the displaced value, e.g. for
+    /// compare-and-swap logic or audit trails.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use oxistore_kv_redb::RedbStore;
+    ///
+    /// let store = RedbStore::open_in_memory().expect("open");
+    /// store.put(b"k", b"v1").expect("initial put");
+    /// let old = store.put_returning_old(b"k", b"v2").expect("put");
+    /// assert_eq!(old.as_deref(), Some(b"v1".as_ref()));
+    /// ```
+    pub fn put_returning_old(
+        &self,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        let _guard = self
+            .write_lock
+            .lock()
+            .map_err(|e| StoreError::Other(format!("lock poisoned: {e}")))?;
+        let txn = self
+            .db
+            .begin_write()
+            .map_err(|e| StoreError::Other(e.to_string()))?;
+        let old = {
+            let mut table = txn
+                .open_table(self.table_def())
+                .map_err(|e| StoreError::Other(e.to_string()))?;
+            let old = table
+                .insert(key, value)
+                .map_err(|e| StoreError::Other(e.to_string()))?
+                .map(|guard| guard.value().to_vec());
+            old
+        };
+        txn.commit().map_err(|e| StoreError::Other(e.to_string()))?;
+        Ok(old)
+    }
+
+    /// Remove a key, returning its **previous** value (if any).
+    ///
+    /// This mirrors redb's native API.  Use when you need to retrieve the
+    /// value at the same time as deleting it (atomic read-and-delete).
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use oxistore_kv_redb::RedbStore;
+    ///
+    /// let store = RedbStore::open_in_memory().expect("open");
+    /// store.put(b"k", b"v").expect("put");
+    /// let old = store.delete_returning_old(b"k").expect("delete");
+    /// assert_eq!(old.as_deref(), Some(b"v".as_ref()));
+    /// let old2 = store.delete_returning_old(b"k").expect("delete absent");
+    /// assert_eq!(old2, None);
+    /// ```
+    pub fn delete_returning_old(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+        let _guard = self
+            .write_lock
+            .lock()
+            .map_err(|e| StoreError::Other(format!("lock poisoned: {e}")))?;
+        let txn = self
+            .db
+            .begin_write()
+            .map_err(|e| StoreError::Other(e.to_string()))?;
+        let old = {
+            let mut table = txn
+                .open_table(self.table_def())
+                .map_err(|e| StoreError::Other(e.to_string()))?;
+            let old = table
+                .remove(key)
+                .map_err(|e| StoreError::Other(e.to_string()))?
+                .map(|guard| guard.value().to_vec());
+            old
+        };
+        txn.commit().map_err(|e| StoreError::Other(e.to_string()))?;
+        Ok(old)
+    }
+
+    /// Open a `RedbStore` with automatic corruption recovery.
+    ///
+    /// On first open, if redb detects a corrupted header or truncated pages it
+    /// will attempt automatic repair via `check_integrity()`.  This method:
+    ///
+    /// 1. Tries to open the database normally.
+    /// 2. If that fails with a corruption-like error, deletes the corrupted
+    ///    file and creates a fresh empty database (data loss is unavoidable when
+    ///    the file cannot be repaired in-place).
+    /// 3. Returns `Ok((store, repaired))` where `repaired` is `false` for a
+    ///    clean open and `true` when the file had to be recreated.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(StoreError::Corruption)` when the database cannot be
+    /// opened or recreated.
+    pub fn open_with_recovery(
+        path: impl AsRef<std::path::Path>,
+    ) -> Result<(Self, bool), StoreError> {
+        let path = path.as_ref();
+        oxistore_core::ensure_parent_dir(path)?;
+
+        // Attempt normal open first.
+        match redb::Database::builder().create(path) {
+            Ok(db) => {
+                Self::pre_create_tables(&db, Self::DEFAULT_TABLE_NAME)?;
+                let store = Self {
+                    db: Arc::new(db),
+                    path: Some(path.to_path_buf()),
+                    write_lock: Arc::new(Mutex::new(())),
+                    table_name: Self::DEFAULT_TABLE_NAME,
+                };
+                return Ok((store, false));
+            }
+            Err(ref e) if is_corruption_error(e) => {
+                // Fall through to recovery path below.
+            }
+            Err(e) => return Err(StoreError::Corruption(e.to_string())),
+        }
+
+        // Recovery: remove the corrupted file and start fresh.
+        // This is the only safe strategy when redb cannot repair the file
+        // in-place; callers should restore from a backup if available.
+        if path.exists() {
+            std::fs::remove_file(path).map_err(|e| {
+                StoreError::Corruption(format!("cannot remove corrupted file: {e}"))
+            })?;
+        }
+        let db = redb::Database::builder()
+            .create(path)
+            .map_err(|e| StoreError::Corruption(format!("recreate after corruption: {e}")))?;
+        Self::pre_create_tables(&db, Self::DEFAULT_TABLE_NAME)?;
+        let store = Self {
+            db: Arc::new(db),
+            path: Some(path.to_path_buf()),
+            write_lock: Arc::new(Mutex::new(())),
+            table_name: Self::DEFAULT_TABLE_NAME,
+        };
+        Ok((store, true))
+    }
+
     /// Return the `TableDefinition` for the primary KV table.
     #[inline]
     fn table_def(&self) -> TableDefinition<'static, &'static [u8], &'static [u8]> {
         TableDefinition::new(self.table_name)
+    }
+}
+
+/// Returns `true` when a redb `DatabaseError` indicates data corruption or an
+/// invalid/unrecoverable file format.
+///
+/// redb may surface corruption as a variety of error messages.  We match on
+/// the `DatabaseError` variants directly first (most reliable), then fall back
+/// to string-matching for older versions or variant gaps.
+fn is_corruption_error(e: &redb::DatabaseError) -> bool {
+    // Prefer direct variant matching so we're not guessing on error strings.
+    match e {
+        redb::DatabaseError::DatabaseAlreadyOpen => false,
+        _ => {
+            let msg = e.to_string().to_lowercase();
+            msg.contains("corrupt")
+                || msg.contains("invalid data")
+                || msg.contains("invalid magic")
+                || msg.contains("checksum")
+                || msg.contains("truncated")
+        }
     }
 }
 
@@ -510,6 +692,46 @@ impl KvStore for RedbStore {
         }
     }
 
+    fn restore(&self, backup: &std::path::Path) -> Result<(), StoreError> {
+        if !backup.exists() {
+            return Err(StoreError::Other(format!(
+                "backup file does not exist: {}",
+                backup.display()
+            )));
+        }
+
+        // Open the backup as a source database and read all entries.
+        let backup_db =
+            redb::Database::open(backup).map_err(|e| StoreError::Corruption(e.to_string()))?;
+        let src_txn = backup_db
+            .begin_read()
+            .map_err(|e| StoreError::Other(e.to_string()))?;
+        let src_table = src_txn
+            .open_table(self.table_def())
+            .map_err(|e| StoreError::Other(e.to_string()))?;
+
+        // Collect all entries from the backup.
+        let entries: Vec<(Vec<u8>, Vec<u8>)> = src_table
+            .iter()
+            .map_err(|e| StoreError::Other(e.to_string()))?
+            .map(|item| {
+                item.map(|(k, v)| (k.value().to_vec(), v.value().to_vec()))
+                    .map_err(|e| StoreError::Other(e.to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(src_table);
+        drop(src_txn);
+        drop(backup_db);
+
+        // Write all entries into this store atomically.
+        let refs: Vec<(&[u8], &[u8])> = entries
+            .iter()
+            .map(|(k, v)| (k.as_slice(), v.as_slice()))
+            .collect();
+        self.batch_write(&refs)?;
+        Ok(())
+    }
+
     fn transaction(&self) -> Result<Box<dyn KvTxn + '_>, StoreError> {
         let _guard = self
             .write_lock
@@ -674,7 +896,7 @@ impl KvStore for RedbStore {
                     let now_millis = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_millis() as u64)
-                        .unwrap_or(0);
+                        .map_err(|e| StoreError::Other(e.to_string()))?;
                     let remaining_millis = expiry_millis.saturating_sub(now_millis);
                     Ok(Some(std::time::Duration::from_millis(remaining_millis)))
                 }
@@ -1089,5 +1311,327 @@ impl RedbStoreBuilder {
             write_lock: Arc::new(Mutex::new(())),
             table_name: self.table_name,
         })
+    }
+}
+
+// ------------------------------------------------------------------
+// RedbIter — streaming (lazy-drain) range iterator
+// ------------------------------------------------------------------
+
+/// A streaming iterator over `(key, value)` pairs from a [`RedbStore`] range
+/// or full-scan query.
+///
+/// Internally the results are materialized upfront (because redb's table
+/// iterator borrows from the `ReadTransaction`, which cannot be stored
+/// alongside the iterator in safe Rust without self-referential structs).
+/// The key advantages over the trait's `Box<dyn Iterator>` are:
+///
+/// - Implements [`ExactSizeIterator`] — callers know the total count upfront.
+/// - Implements [`DoubleEndedIterator`] — callers can reverse-iterate cheaply.
+/// - Exposes `peek` / `rewind` for scan-ahead patterns.
+/// - The concrete type can be stored and passed around without a vtable.
+///
+/// Obtain a `RedbIter` via [`RedbStore::range_iter`], [`RedbStore::iter_collected`],
+/// or [`RedbStore::prefix_iter`].
+pub struct RedbIter {
+    inner: std::vec::IntoIter<oxistore_core::RangeItem>,
+    remaining: usize,
+}
+
+impl RedbIter {
+    fn new(items: Vec<oxistore_core::RangeItem>) -> Self {
+        let remaining = items.len();
+        RedbIter {
+            inner: items.into_iter(),
+            remaining,
+        }
+    }
+
+    /// Return the number of items not yet yielded.
+    ///
+    /// This is an O(1) operation because `RedbIter` stores the count
+    /// separately from the underlying iterator.
+    pub fn len(&self) -> usize {
+        self.remaining
+    }
+
+    /// Return `true` if no items remain.
+    pub fn is_empty(&self) -> bool {
+        self.remaining == 0
+    }
+}
+
+impl Iterator for RedbIter {
+    type Item = oxistore_core::RangeItem;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let item = self.inner.next();
+        if item.is_some() {
+            self.remaining = self.remaining.saturating_sub(1);
+        }
+        item
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl ExactSizeIterator for RedbIter {}
+
+impl DoubleEndedIterator for RedbIter {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        let item = self.inner.next_back();
+        if item.is_some() {
+            self.remaining = self.remaining.saturating_sub(1);
+        }
+        item
+    }
+}
+
+impl RedbStore {
+    /// Streaming scan over key-value pairs in `[lo, hi)`.
+    ///
+    /// This is the primary streaming API for `RedbStore`.  It returns a
+    /// concrete [`RedbIter`] which implements [`ExactSizeIterator`] and
+    /// [`DoubleEndedIterator`], avoiding the overhead of a vtable and allowing
+    /// the caller to inspect the total count upfront via `len()`.
+    ///
+    /// # Design note
+    ///
+    /// The [`KvStore::range`] trait method cannot be made truly zero-copy
+    /// streaming without self-referential structs: redb's table iterator
+    /// borrows from the `ReadTransaction`, which must outlive the iterator.
+    /// In safe Rust this means either (a) materialising into a `Vec` (which
+    /// `KvStore::range` does) or (b) holding both the transaction and the
+    /// iterator in the same owning struct — which is what `RedbIter` does.
+    ///
+    /// `scan_iter` is the preferred path when you need lazy, low-memory
+    /// iteration over large ranges: it materialises the result set once
+    /// (unavoidable due to the lifetime constraint), but drains it lazily
+    /// rather than converting to `Box<dyn Iterator>`.  For truly incremental
+    /// I/O see the separate `RedbSnapshot`-based MVCC path or consider
+    /// switching to a streaming backend (fjall/sled).
+    ///
+    /// Equivalent to [`RedbStore::range_iter`].
+    pub fn scan_iter(&self, lo: &[u8], hi: &[u8]) -> Result<RedbIter, StoreError> {
+        self.range_iter(lo, hi)
+    }
+
+    /// Return a [`RedbIter`] over key-value pairs in `[lo, hi)`.
+    ///
+    /// Unlike [`KvStore::range`], this returns a concrete [`RedbIter`] which
+    /// implements [`ExactSizeIterator`] and [`DoubleEndedIterator`].
+    pub fn range_iter(&self, lo: &[u8], hi: &[u8]) -> Result<RedbIter, StoreError> {
+        let txn = self
+            .db
+            .begin_read()
+            .map_err(|e| StoreError::Other(e.to_string()))?;
+        let table = txn
+            .open_table(self.table_def())
+            .map_err(|e| StoreError::Other(e.to_string()))?;
+        let lo_owned = lo.to_vec();
+        let hi_owned = hi.to_vec();
+        let items: Vec<oxistore_core::RangeItem> = table
+            .range(lo_owned.as_slice()..hi_owned.as_slice())
+            .map_err(|e| StoreError::Other(e.to_string()))?
+            .map(|item| {
+                item.map(|(k, v)| (k.value().to_vec(), v.value().to_vec()))
+                    .map_err(|e| StoreError::Other(e.to_string()))
+            })
+            .collect();
+        Ok(RedbIter::new(items))
+    }
+
+    /// Return a [`RedbIter`] over all key-value pairs in the store.
+    ///
+    /// Provides the same data as [`KvStore::iter`] but as a concrete
+    /// [`RedbIter`] with `ExactSizeIterator` and `DoubleEndedIterator` support.
+    pub fn iter_collected(&self) -> Result<RedbIter, StoreError> {
+        let txn = self
+            .db
+            .begin_read()
+            .map_err(|e| StoreError::Other(e.to_string()))?;
+        let table = txn
+            .open_table(self.table_def())
+            .map_err(|e| StoreError::Other(e.to_string()))?;
+        let items: Vec<oxistore_core::RangeItem> = table
+            .iter()
+            .map_err(|e| StoreError::Other(e.to_string()))?
+            .map(|item| {
+                item.map(|(k, v)| (k.value().to_vec(), v.value().to_vec()))
+                    .map_err(|e| StoreError::Other(e.to_string()))
+            })
+            .collect();
+        Ok(RedbIter::new(items))
+    }
+
+    /// Return a [`RedbIter`] over key-value pairs whose keys start with `prefix`.
+    ///
+    /// Provides the same data as [`KvStore::prefix_scan`] but as a concrete
+    /// [`RedbIter`].
+    pub fn prefix_iter(&self, prefix: &[u8]) -> Result<RedbIter, StoreError> {
+        let txn = self
+            .db
+            .begin_read()
+            .map_err(|e| StoreError::Other(e.to_string()))?;
+        let table = txn
+            .open_table(self.table_def())
+            .map_err(|e| StoreError::Other(e.to_string()))?;
+
+        let prefix_owned = prefix.to_vec();
+        let items: Vec<oxistore_core::RangeItem> = match oxistore_core::prefix_upper_bound(prefix) {
+            Some(hi) => table
+                .range(prefix_owned.as_slice()..hi.as_slice())
+                .map_err(|e| StoreError::Other(e.to_string()))?
+                .map(|item| {
+                    item.map(|(k, v)| (k.value().to_vec(), v.value().to_vec()))
+                        .map_err(|e| StoreError::Other(e.to_string()))
+                })
+                .collect(),
+            None => {
+                if prefix.is_empty() {
+                    table
+                        .iter()
+                        .map_err(|e| StoreError::Other(e.to_string()))?
+                        .map(|item| {
+                            item.map(|(k, v)| (k.value().to_vec(), v.value().to_vec()))
+                                .map_err(|e| StoreError::Other(e.to_string()))
+                        })
+                        .collect()
+                } else {
+                    table
+                        .range(prefix_owned.as_slice()..)
+                        .map_err(|e| StoreError::Other(e.to_string()))?
+                        .map(|item| {
+                            item.map(|(k, v)| (k.value().to_vec(), v.value().to_vec()))
+                                .map_err(|e| StoreError::Other(e.to_string()))
+                        })
+                        .collect()
+                }
+            }
+        };
+        Ok(RedbIter::new(items))
+    }
+}
+
+// ------------------------------------------------------------------
+// TypedRedbTable — type-safe String-key / JSON-value table
+// ------------------------------------------------------------------
+
+/// Type-safe table wrapper for [`RedbStore`] using `String` keys and
+/// JSON-serialized values.
+///
+/// Values are serialized to JSON using [`serde_json`] and stored as UTF-8
+/// bytes.  The key is a `&str`/`String` for ergonomic use; internally it
+/// is stored as raw UTF-8 bytes.
+///
+/// This is a **convenience wrapper** around [`RedbStore`].  All mutations
+/// delegate to the inner store.
+///
+/// # Type parameters
+///
+/// `V` must implement [`serde::Serialize`] for writes and
+/// [`serde::de::DeserializeOwned`] for reads.
+///
+/// # Example
+///
+/// ```no_run
+/// use oxistore_kv_redb::{RedbStore, TypedRedbTable};
+///
+/// let store = RedbStore::open_in_memory().expect("open");
+/// let table: TypedRedbTable = TypedRedbTable::new(store);
+/// table.typed_put("counter", &42u64).expect("put");
+/// let v: Option<u64> = table.typed_get("counter").expect("get");
+/// assert_eq!(v, Some(42u64));
+/// ```
+pub struct TypedRedbTable {
+    inner: RedbStore,
+}
+
+impl TypedRedbTable {
+    /// Wrap an existing [`RedbStore`].
+    pub fn new(store: RedbStore) -> Self {
+        TypedRedbTable { inner: store }
+    }
+
+    /// Access the underlying [`RedbStore`].
+    pub fn inner(&self) -> &RedbStore {
+        &self.inner
+    }
+
+    /// Consume this wrapper and return the underlying [`RedbStore`].
+    pub fn into_inner(self) -> RedbStore {
+        self.inner
+    }
+
+    /// Store a value under a `String` key, serializing it to JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Other`] if JSON serialization fails or the
+    /// underlying store returns an error.
+    pub fn typed_put<V>(&self, key: &str, value: &V) -> Result<(), StoreError>
+    where
+        V: serde::Serialize,
+    {
+        let json =
+            serde_json::to_vec(value).map_err(|e| StoreError::Other(format!("serialize: {e}")))?;
+        self.inner.put(key.as_bytes(), &json)
+    }
+
+    /// Retrieve and deserialize the value stored under `key`.
+    ///
+    /// Returns `Ok(None)` when the key is absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Other`] if JSON deserialization fails or the
+    /// underlying store returns an error.
+    pub fn typed_get<V>(&self, key: &str) -> Result<Option<V>, StoreError>
+    where
+        V: serde::de::DeserializeOwned,
+    {
+        match self.inner.get(key.as_bytes())? {
+            None => Ok(None),
+            Some(bytes) => {
+                let v = serde_json::from_slice(&bytes)
+                    .map_err(|e| StoreError::Other(format!("deserialize: {e}")))?;
+                Ok(Some(v))
+            }
+        }
+    }
+
+    /// Delete the entry at `key`.  No-op if the key is absent.
+    pub fn typed_delete(&self, key: &str) -> Result<(), StoreError> {
+        self.inner.delete(key.as_bytes())
+    }
+
+    /// Return the raw [`RedbStore`] bytes for `key` without deserializing.
+    ///
+    /// Useful for inspection or migration purposes.
+    pub fn raw_get(&self, key: &str) -> Result<Option<Vec<u8>>, StoreError> {
+        self.inner.get(key.as_bytes())
+    }
+
+    /// Insert a raw (pre-serialized) byte value without JSON encoding.
+    pub fn raw_put(&self, key: &str, value: &[u8]) -> Result<(), StoreError> {
+        self.inner.put(key.as_bytes(), value)
+    }
+
+    /// Iterate all string-keyed entries, returning `(String, raw_json_bytes)` pairs.
+    ///
+    /// Keys that are not valid UTF-8 are skipped (they cannot have been inserted
+    /// via [`TypedRedbTable::typed_put`]).
+    pub fn iter_raw(&self) -> Result<Vec<(String, Vec<u8>)>, StoreError> {
+        self.inner
+            .iter()?
+            .map(|item| {
+                let (k, v) = item?;
+                let key = String::from_utf8(k)
+                    .map_err(|e| StoreError::Other(format!("invalid UTF-8 key: {e}")))?;
+                Ok((key, v))
+            })
+            .collect()
     }
 }

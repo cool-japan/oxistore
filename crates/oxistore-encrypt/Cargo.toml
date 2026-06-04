@@ -13,16 +13,27 @@ keywords = ["kv-store", "encryption", "aead", "pure-rust", "cooljapan"]
 [features]
 default = []
 encrypt = []
+# Enable serde Serialize/Deserialize for CellId
+serde = ["dep:serde"]
+# Enable real OS keyring integration (macOS Keychain, Linux secret-service,
+# Windows Credential Manager) via the `keyring-core` crate.
+os-keyring = ["dep:keyring-core"]
 
 [dependencies]
 oxistore-core.workspace = true
 oxicrypto.workspace = true
+serde = { workspace = true, optional = true }
+keyring-core = { version = "1.0.0", optional = true }
 
 [dev-dependencies]
-oxistore-kv-redb.workspace = true
-oxistore-kv-sled.workspace = true
+oxistore-kv-redb = { path = "../oxistore-kv-redb" }
+oxistore-kv-sled = { path = "../oxistore-kv-sled" }
 proptest.workspace = true
 criterion.workspace = true
+serde_json.workspace = true
+# Cross-workspace dev-dep for EncryptedPooledStore integration test.
+oxisql-pool = { version = "0.1.0", features = ["embedded"] }
+tokio.workspace = true
 
 [[bench]]
 name = "encrypt_ops"

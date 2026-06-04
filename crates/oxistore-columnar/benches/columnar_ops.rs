@@ -268,6 +268,74 @@ fn bench_encoding_roundtrip(c: &mut Criterion) {
     group.finish();
 }
 
+// ---------------------------------------------------------------------------
+// Streaming writer vs batch writer throughput
+// ---------------------------------------------------------------------------
+
+fn bench_streaming_vs_batch_write(c: &mut Criterion) {
+    use oxistore_columnar::{ColumnarStreamWriter, ColumnarTable, DataType, Field};
+
+    const N_ROWS: usize = 10_000;
+    const BATCH_SIZE: usize = 1_000;
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("val", DataType::Float64, false),
+        Field::new("tag", DataType::Utf8, false),
+    ]));
+
+    let make_batch = |offset: usize| {
+        let ids: Vec<i64> = (offset as i64..(offset + BATCH_SIZE) as i64).collect();
+        let vals: Vec<f64> = ids.iter().map(|&v| v as f64 * 0.001).collect();
+        let tags: Vec<&str> = ids
+            .iter()
+            .map(|i| if i % 2 == 0 { "even" } else { "odd" })
+            .collect();
+        RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int64Array::from(ids)) as Arc<dyn arrow::array::Array>,
+                Arc::new(Float64Array::from(vals)),
+                Arc::new(StringArray::from(tags)),
+            ],
+        )
+        .expect("batch")
+    };
+
+    let batches: Vec<RecordBatch> = (0..N_ROWS / BATCH_SIZE)
+        .map(|b| make_batch(b * BATCH_SIZE))
+        .collect();
+
+    let mut group = c.benchmark_group("streaming_vs_batch");
+    group.throughput(Throughput::Elements(N_ROWS as u64));
+
+    group.bench_function("batch_writer", |b| {
+        b.iter(|| {
+            let mut table = ColumnarTable::new(Arc::clone(&schema));
+            for batch in &batches {
+                table.push(batch.clone()).expect("push");
+            }
+            let bytes = table.write_to_bytes().expect("write_to_bytes");
+            black_box(bytes.len());
+        });
+    });
+
+    group.bench_function("streaming_writer", |b| {
+        b.iter(|| {
+            let mut buf = Vec::new();
+            let mut writer =
+                ColumnarStreamWriter::new(Arc::clone(&schema), &mut buf, None).expect("stream");
+            for batch in &batches {
+                writer.write_batch(batch).expect("write_batch");
+            }
+            writer.finish().expect("finish");
+            black_box(buf.len());
+        });
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_write_partitioned,
@@ -275,5 +343,6 @@ criterion_group!(
     bench_column_pruning,
     bench_predicate_pushdown,
     bench_encoding_roundtrip,
+    bench_streaming_vs_batch_write,
 );
 criterion_main!(benches);

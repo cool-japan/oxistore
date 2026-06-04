@@ -15,10 +15,71 @@
 //! transaction support **read-your-writes**: buffered puts and deletes are
 //! visible immediately via the local overlay.
 //!
+//! ## Transaction isolation guarantees
+//!
+//! The sled backend provides **serialisable snapshot isolation** for
+//! transactions.  When `SledTxn::commit` is called, all buffered operations
+//! are applied atomically inside a single `sled::Tree::transaction` closure.
+//! If another thread concurrently modifies a key that this transaction also
+//! writes, sled detects the conflict and retries internally until the
+//! transaction commits successfully.
+//!
+//! Key properties:
+//! - **Atomicity** — either all buffered ops commit or none do.
+//! - **Read-your-writes** — `txn.get(key)` will see values written by
+//!   `txn.put(key, …)` earlier in the same transaction, via an in-memory
+//!   overlay that is applied before querying the committed sled state.
+//! - **Isolation** — reads within the transaction see the *committed* state
+//!   as of when the closure executes, not the state at transaction begin time.
+//!   This is a known M1 limitation of the closure-based API: there is no way
+//!   to freeze the read view at `transaction()` call time.
+//! - **Durability** — after a successful `commit`, data is in sled's write
+//!   buffer.  Call `flush()` or `flush_sync()` to ensure it is flushed to the
+//!   OS and/or persistent storage.
+//!
+//! ## Rollback
+//!
+//! Calling `txn.rollback()` discards the local buffer without applying any
+//! operation.  It is safe to call even if the transaction has not been
+//! committed.  There is no penalty for rolling back.
+//!
 //! # Snapshot model
 //!
-//! sled 0.34 does not expose a snapshot API.  [`KvStore::snapshot`] therefore
-//! materialises the entire current tree into a `BTreeMap` at call time.
+//! sled 0.34 does not expose a fork-based snapshot API, so [`KvStore::snapshot`]
+//! materialises the entire current tree into an immutable `BTreeMap` at call
+//! time.  The resulting [`SledSnapshot`] is a point-in-time copy — subsequent
+//! mutations to the live store are invisible through the snapshot.
+//!
+//! Because the snapshot is a full copy, it is not suitable as a lightweight
+//! read-view for high-write workloads.  For that use case, prefer a
+//! read-transaction via `transaction()` (which pays only for the ops it
+//! executes) or query the live store directly with appropriate application-level
+//! concurrency control.
+//!
+//! # Space reclamation
+//!
+//! sled uses a log-structured storage format that performs background
+//! segment rewriting ("compaction") continuously.  Callers do not need to
+//! trigger compaction manually; it happens on every write under the hood.
+//!
+//! To force pending in-memory dirty pages to be persisted to the OS (and
+//! potentially trigger immediate segment rewriting), call:
+//! - [`SledStore::flush`] / [`KvStore::flush`] — async-safe best-effort flush.
+//! - [`SledStore::flush_sync`] — blocking flush that returns only after the OS
+//!   has confirmed durability.
+//! - [`SledStore::flush_with_reclaim`] — like `flush_sync` but additionally
+//!   logs the current on-disk size so callers can observe the effect of GC.
+//!
+//! In [`SledMode::LowSpace`] (the default), sled aggressively rewrites
+//! segments to minimise disk usage at the cost of some write amplification.
+//! In [`SledMode::HighThroughput`], it optimises for write throughput and
+//! may leave more stale data on disk between compaction cycles.
+//!
+//! # Feature flags
+//!
+//! | Feature | Description |
+//! |---------|-------------|
+//! | `typed` | Enable [`TypedSledStore<K, V>`] with serde-based serialisation |
 //!
 //! # Example
 //!
@@ -37,6 +98,37 @@ use std::collections::BTreeMap;
 use oxistore_core::{
     expiry_epoch_millis, is_expired, KeysIter, KvSnapshot, KvStore, KvTxn, RangeIter, StoreError,
 };
+
+// ------------------------------------------------------------------
+// SledMode
+// ------------------------------------------------------------------
+
+/// The high-level operating mode for a [`SledStore`] / [`SledStoreBuilder`].
+///
+/// This mirrors `sled::Mode` and governs the space-vs-throughput trade-off
+/// inside the sled storage engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SledMode {
+    /// Favour smaller on-disk footprint over raw write throughput.
+    ///
+    /// sled rewrites segments more aggressively to reclaim space.
+    /// This is the sled default and is appropriate for most workloads.
+    #[default]
+    LowSpace,
+    /// Favour maximum write throughput over minimal disk usage.
+    ///
+    /// Stale data may accumulate on disk between compaction cycles.
+    HighThroughput,
+}
+
+impl From<SledMode> for sled::Mode {
+    fn from(mode: SledMode) -> Self {
+        match mode {
+            SledMode::LowSpace => sled::Mode::LowSpace,
+            SledMode::HighThroughput => sled::Mode::HighThroughput,
+        }
+    }
+}
 
 // ------------------------------------------------------------------
 // SledStore
@@ -195,6 +287,37 @@ impl SledStore {
             .flush()
             .map(|_| ())
             .map_err(|e| StoreError::Io(std::sync::Arc::new(std::io::Error::other(e.to_string()))))
+    }
+
+    /// Flush all pending writes to disk and return the current on-disk size.
+    ///
+    /// This combines a durable [`flush_sync`](Self::flush_sync) with a
+    /// `size_on_disk` query, giving callers a convenient way to observe the
+    /// effect of sled's background compaction / segment-rewriting on disk
+    /// usage after a forced flush.
+    ///
+    /// # Space reclamation notes
+    ///
+    /// sled's log-structured engine continuously reclaims space by rewriting
+    /// obsolete segments in the background.  Calling this method after a
+    /// workload can confirm that GC has made progress.  For further control,
+    /// switch to [`SledMode::LowSpace`] via [`SledStoreBuilder::mode`] to
+    /// maximise how aggressively sled rewrites old segments.
+    ///
+    /// # Returns
+    ///
+    /// The number of bytes currently occupied by this database on disk,
+    /// after the flush has completed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Io`] if the flush fails, or
+    /// [`StoreError::Other`] if the size query fails.
+    pub fn flush_with_reclaim(&self) -> Result<u64, StoreError> {
+        self.flush_sync()?;
+        self.db
+            .size_on_disk()
+            .map_err(|e| StoreError::Other(e.to_string()))
     }
 }
 
@@ -631,18 +754,19 @@ impl KvTxn for SledTxn<'_> {
 /// Builder for [`SledStore`].
 ///
 /// Provides fine-grained control over the underlying sled database:
-/// custom cache capacity, flush interval, compression, and temporary
-/// (auto-deleted) mode.
+/// custom cache capacity, flush interval, compression, operating mode,
+/// segment size, and temporary (auto-deleted) mode.
 ///
 /// # Example
 ///
 /// ```no_run
-/// use oxistore_kv_sled::SledStoreBuilder;
+/// use oxistore_kv_sled::{SledStoreBuilder, SledMode};
 /// use oxistore_core::KvStore;
 ///
 /// let store = SledStoreBuilder::new()
 ///     .cache_capacity(64 * 1024 * 1024)
 ///     .use_compression(true)
+///     .mode(SledMode::HighThroughput)
 ///     .build("/tmp/my-sled-store")
 ///     .expect("build failed");
 /// store.put(b"hello", b"world").expect("put failed");
@@ -652,6 +776,8 @@ pub struct SledStoreBuilder {
     flush_every_ms: Option<u64>,
     use_compression: bool,
     temporary: bool,
+    mode: SledMode,
+    segment_size: Option<usize>,
 }
 
 impl Default for SledStoreBuilder {
@@ -668,6 +794,8 @@ impl SledStoreBuilder {
             flush_every_ms: None,
             use_compression: false,
             temporary: false,
+            mode: SledMode::default(),
+            segment_size: None,
         }
     }
 
@@ -704,6 +832,39 @@ impl SledStoreBuilder {
         self
     }
 
+    /// Set the operating mode — space-optimised or throughput-optimised.
+    ///
+    /// Corresponds to `sled::Config::mode`.  Defaults to
+    /// [`SledMode::LowSpace`], which is the sled default.
+    ///
+    /// | Mode | Behaviour |
+    /// |------|-----------|
+    /// | [`SledMode::LowSpace`] | Aggressively rewrites segments; lower disk usage |
+    /// | [`SledMode::HighThroughput`] | Optimises for write speed; may use more disk |
+    #[must_use]
+    pub fn mode(mut self, mode: SledMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// Set the sled segment size in bytes (must be a power of two, ≥ 256,
+    /// and ≤ 16 MiB).
+    ///
+    /// The segment size controls the granularity at which sled manages on-disk
+    /// storage.  Smaller segments improve space reclamation but increase I/O
+    /// overhead; larger segments are more efficient for sequential workloads.
+    /// The default is 512 KiB.
+    ///
+    /// # Panics
+    ///
+    /// sled will panic at open-time if the value is not a power of two, is
+    /// below 256, or exceeds `1 << 24` (16 MiB).
+    #[must_use]
+    pub fn segment_size(mut self, bytes: usize) -> Self {
+        self.segment_size = Some(bytes);
+        self
+    }
+
     /// Build a [`SledStore`] at the given path (or as a temporary store if
     /// [`Self::temporary`] was set to `true`).
     ///
@@ -717,6 +878,10 @@ impl SledStoreBuilder {
             config = config.flush_every_ms(Some(fms));
         }
         config = config.use_compression(self.use_compression);
+        config = config.mode(self.mode.into());
+        if let Some(seg) = self.segment_size {
+            config = config.segment_size(seg);
+        }
         if self.temporary {
             config = config.temporary(true);
         }
@@ -734,6 +899,10 @@ impl SledStoreBuilder {
 }
 
 /// A point-in-time snapshot of a sled tree, materialised into a `BTreeMap`.
+///
+/// Returned by [`KvStore::snapshot`] / [`SledStore::snapshot`].  The data is
+/// frozen at the moment `snapshot()` is called; subsequent writes to the live
+/// store are not reflected here.
 pub struct SledSnapshot {
     data: std::collections::BTreeMap<Vec<u8>, Vec<u8>>,
 }
@@ -752,5 +921,132 @@ impl KvSnapshot for SledSnapshot {
             .map(|(k, v)| Ok((k.clone(), v.clone())))
             .collect();
         Ok(Box::new(pairs.into_iter()))
+    }
+}
+
+// ------------------------------------------------------------------
+// TypedSledStore — serde-based typed wrapper
+// ------------------------------------------------------------------
+
+/// A typed wrapper around [`SledStore`] that transparently serialises
+/// keys and values using [serde_json](https://docs.rs/serde_json).
+///
+/// This is only available when the `typed` feature is enabled.
+///
+/// `K` must implement [`serde::Serialize`] + [`serde::de::DeserializeOwned`]
+/// and must produce a JSON-serialisable value whose string representation
+/// is used as the raw byte key.  In practice this means string-like keys
+/// work best (JSON strings, integers, newtype wrappers).
+///
+/// `V` is serialised as a JSON byte string for storage and deserialised on
+/// retrieval.
+///
+/// # Example
+///
+/// ```no_run
+/// # #[cfg(feature = "typed")]
+/// # {
+/// use oxistore_kv_sled::TypedSledStore;
+///
+/// let store: TypedSledStore<String, u64> =
+///     TypedSledStore::open_temporary().expect("open failed");
+/// store.put_typed("counter", &42u64).expect("put failed");
+/// let v: Option<u64> = store.get_typed("counter").expect("get failed");
+/// assert_eq!(v, Some(42));
+/// # }
+/// ```
+#[cfg(feature = "typed")]
+pub struct TypedSledStore<K, V> {
+    inner: SledStore,
+    _phantom: std::marker::PhantomData<(K, V)>,
+}
+
+#[cfg(feature = "typed")]
+impl<K, V> TypedSledStore<K, V>
+where
+    K: serde::Serialize + serde::de::DeserializeOwned,
+    V: serde::Serialize + serde::de::DeserializeOwned,
+{
+    /// Open (or create) a [`TypedSledStore`] at `path`.
+    pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self, StoreError> {
+        Ok(Self {
+            inner: SledStore::open(path)?,
+            _phantom: std::marker::PhantomData,
+        })
+    }
+
+    /// Open an ephemeral (temporary) [`TypedSledStore`].
+    pub fn open_temporary() -> Result<Self, StoreError> {
+        Ok(Self {
+            inner: SledStore::open_temporary()?,
+            _phantom: std::marker::PhantomData,
+        })
+    }
+
+    /// Serialise `key` and `value` and store them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Other`] if serialisation fails, or a storage
+    /// error if the underlying sled operation fails.
+    pub fn put_typed(&self, key: impl std::borrow::Borrow<K>, value: &V) -> Result<(), StoreError> {
+        let key_bytes = Self::encode_key(key.borrow())?;
+        let val_bytes = Self::encode_value(value)?;
+        self.inner.put(&key_bytes, &val_bytes)
+    }
+
+    /// Retrieve and deserialise the value associated with `key`.
+    ///
+    /// Returns `Ok(None)` when the key does not exist or has expired.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Other`] if deserialisation fails, or a storage
+    /// error if the underlying sled operation fails.
+    pub fn get_typed(&self, key: impl std::borrow::Borrow<K>) -> Result<Option<V>, StoreError> {
+        let key_bytes = Self::encode_key(key.borrow())?;
+        match self.inner.get(&key_bytes)? {
+            None => Ok(None),
+            Some(bytes) => {
+                let value = serde_json::from_slice::<V>(&bytes)
+                    .map_err(|e| StoreError::Other(format!("deserialise value: {e}")))?;
+                Ok(Some(value))
+            }
+        }
+    }
+
+    /// Remove the entry at `key`.
+    pub fn delete_typed(&self, key: impl std::borrow::Borrow<K>) -> Result<(), StoreError> {
+        let key_bytes = Self::encode_key(key.borrow())?;
+        self.inner.delete(&key_bytes)
+    }
+
+    /// Return `true` if `key` has an entry in the store.
+    pub fn contains_typed(&self, key: impl std::borrow::Borrow<K>) -> Result<bool, StoreError> {
+        let key_bytes = Self::encode_key(key.borrow())?;
+        self.inner.contains(&key_bytes)
+    }
+
+    /// Flush pending writes to disk.
+    pub fn flush(&self) -> Result<(), StoreError> {
+        KvStore::flush(&self.inner)
+    }
+
+    /// Return a reference to the underlying [`SledStore`].
+    ///
+    /// This provides access to all raw-byte operations and sled-specific APIs
+    /// (merge operators, named trees, watch/subscribe, etc.).
+    pub fn inner(&self) -> &SledStore {
+        &self.inner
+    }
+
+    // ── encoding helpers ───────────────────────────────────────────────────────
+
+    fn encode_key(key: &K) -> Result<Vec<u8>, StoreError> {
+        serde_json::to_vec(key).map_err(|e| StoreError::Other(format!("serialise key: {e}")))
+    }
+
+    fn encode_value(value: &V) -> Result<Vec<u8>, StoreError> {
+        serde_json::to_vec(value).map_err(|e| StoreError::Other(format!("serialise value: {e}")))
     }
 }

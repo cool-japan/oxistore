@@ -182,14 +182,15 @@ macro_rules! backend_test_suite {
                 use std::time::Duration;
                 let store = make_store();
                 store
-                    .put_with_ttl(b"ttl_key", b"val", Duration::from_millis(50))
+                    .put_with_ttl(b"ttl_key", b"val", Duration::from_millis(100))
                     .expect("put_with_ttl");
                 assert_eq!(
                     store.get(b"ttl_key").expect("get before expiry"),
                     Some(b"val".to_vec())
                 );
-                // Sleep longer than the TTL to account for coarse system clocks.
-                std::thread::sleep(Duration::from_millis(200));
+                // Sleep well beyond the TTL to account for coarse system clocks
+                // and high-load CI/test environments.
+                std::thread::sleep(Duration::from_millis(500));
                 // After expiry, lazy eviction should return None.
                 assert_eq!(
                     store.get(b"ttl_key").expect("get after expiry"),

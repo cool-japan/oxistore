@@ -70,3 +70,24 @@ impl From<std::io::Error> for BlobError {
         BlobError::Io(e)
     }
 }
+
+impl From<BlobError> for oxistore_core::StoreError {
+    /// Convert a [`BlobError`] into a [`oxistore_core::StoreError`].
+    ///
+    /// This allows blob operations to propagate cleanly through functions
+    /// that return `StoreError`.
+    fn from(e: BlobError) -> Self {
+        match e {
+            BlobError::NotFound(k) => {
+                oxistore_core::StoreError::Other(format!("blob not found: {k}"))
+            }
+            BlobError::AlreadyExists(_k) => oxistore_core::StoreError::AlreadyExists,
+            BlobError::Io(io_err) => oxistore_core::StoreError::Io(std::sync::Arc::new(io_err)),
+            BlobError::ChecksumMismatch(msg) => {
+                oxistore_core::StoreError::Corruption(format!("checksum mismatch: {msg}"))
+            }
+            BlobError::QuotaExceeded { .. } => oxistore_core::StoreError::CapacityExceeded,
+            other => oxistore_core::StoreError::Other(other.to_string()),
+        }
+    }
+}
