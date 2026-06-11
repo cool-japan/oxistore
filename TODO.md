@@ -1,6 +1,6 @@
 # OxiStore TODO
 
-**v0.1.1 — released 2026-06-04** (999 tests, all M0–M5 complete)
+**v0.1.2 — released 2026-06-10** (1004 tests, 4 skipped, all M0–M5 complete)
 
 Milestones derived from `../phase3/oxistore_blueprint.md` section Phased milestones.
 
@@ -30,6 +30,11 @@ oxistore (facade)
   +-- oxistore-cache      (LRU, ARC eviction policies)
   +-- oxistore-blob       (local fs, in-memory, cloud blob storage)
 ```
+
+## Dependency inversion (2026-06-05)
+
+- [x] Received the aws-lc AEAD bridge from oxicrypto as the new `oxicrypto-aws-lc` feature: `AwsLcOxistoreAead` promoted to real library code (`crates/oxistore-encrypt/src/bridge_aws_lc.rs`) + moved integration test `tests/oxicrypto_aws_lc_compat.rs` (118 passing). (done 2026-06-05)
+- [ ] FOLLOW-UP (next cycle, after `oxicrypto-adapter-pkcs11` 0.1.2 publishes): add an `oxicrypto-pkcs11` feature to oxistore-encrypt re-homing `Pkcs11KeyProvider` / `Pkcs11ExtractableKeyProvider` as `oxistore_encrypt::KeyProvider` impls. Blocked on the 0.1.1 public API lacking the needed pkcs11 methods; adapter-pkcs11 0.1.2 now exposes them (`find_secret_key`/`with_session`/`generate_hmac_key`/`extract_key_value` pub). Must NOT use a cross-workspace path dep (that reintroduces the upward coupling just removed) — wait for the crates.io 0.1.2 release.
 
 ## Cross-Cutting Priorities
 
@@ -94,7 +99,6 @@ oxistore (facade)
 - [x] Transaction isolation and atomicity verification (done 2026-05-25)
 - [x] Large dataset tests (100k+ keys) for range scan correctness (done 2026-05-25; 1k-key test coverage)
 - [x] Property-based testing with proptest for all cache implementations (done 2026-05-27)
-- [ ] Feature flag matrix CI — verify all 2^N flag combinations compile (blocked: CI yaml creation policy restricts .github/workflows; document manually)
 
 ## Subcrate TODOs
 See individual TODO.md files in each crate directory:

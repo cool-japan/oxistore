@@ -29,7 +29,8 @@
 //! ```no_run
 //! use oxistore::{open, KvStore};
 //!
-//! let store = open("/tmp/my-oxistore").expect("open failed");
+//! # let path = std::env::temp_dir().join("my-oxistore");
+//! let store = open(&path).expect("open failed");
 //! store.put(b"hello", b"world").expect("put failed");
 //! let val = store.get(b"hello").expect("get failed");
 //! assert_eq!(val.as_deref(), Some(b"world".as_ref()));

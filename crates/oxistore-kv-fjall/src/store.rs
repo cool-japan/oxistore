@@ -942,11 +942,12 @@ impl KvSnapshot for FjallSnap<'_> {
 /// use fjall::PersistMode;
 /// use oxistore_core::KvStore;
 ///
+/// # let path = std::env::temp_dir().join("my-fjall-store");
 /// let store = FjallStoreBuilder::new()
 ///     .block_cache_bytes(64 * 1024 * 1024)
 ///     .bloom_filter_bits_per_key(10.0)
 ///     .journal_persist_mode(PersistMode::SyncAll)
-///     .build("/tmp/my-fjall-store")
+///     .build(&path)
 ///     .expect("build failed");
 /// store.put(b"hello", b"world").expect("put failed");
 /// ```
@@ -1065,9 +1066,10 @@ impl FjallStoreBuilder {
     /// use oxistore_kv_fjall::FjallStoreBuilder;
     /// use fjall::CompressionType;
     ///
+    /// # let path = std::env::temp_dir().join("no-compress");
     /// let store = FjallStoreBuilder::new()
     ///     .compression_type(CompressionType::None)  // disable compression
-    ///     .build("/tmp/no-compress")
+    ///     .build(&path)
     ///     .unwrap();
     /// ```
     #[must_use]

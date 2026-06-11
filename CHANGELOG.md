@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-06-10
+
+### Added
+
+- **`oxistore-encrypt`**: `AwsLcOxistoreAead` — new `oxicrypto-aws-lc` feature gate that
+  exposes `AwsLcOxistoreAead` (a bridge adapting `oxicrypto-adapter-aws-lc` AEADs to the
+  `oxistore_encrypt::aead::Aead` trait). Supports AES-256-GCM-SIV, AES-256-GCM, and
+  ChaCha20-Poly1305 via FIPS-validated aws-lc-rs; default features remain 100% Pure Rust.
+  Source: `crates/oxistore-encrypt/src/bridge_aws_lc.rs` (moved from oxicrypto as part of
+  the dependency-inversion initiative of 2026-06-05).
+- **`oxistore-encrypt`**: `oxicrypto_aws_lc_compat` integration test (118 cases) verifying
+  end-to-end `put` + `get` round trips, ciphertext opacity, and authentication-failure
+  detection for all three aws-lc-rs AEAD variants.
+- **`oxistore-encrypt`**: `encrypt_over_oxisql_pool` integration test (under `sql` feature)
+  — validates `EncryptedKv` wrapping a pooled SQL connection (`oxisql-pool`) with
+  transparent per-value encryption, providing a cross-workspace compatibility baseline.
+
+### Changed
+
+- **Dependency inversion** (2026-06-05): The aws-lc-rs AEAD bridge that previously lived
+  in `oxicrypto-adapter-aws-lc` was re-homed here under the `oxicrypto-aws-lc` feature
+  flag, making `oxicrypto` a pure leaf crate with no upward coupling to the storage layer.
+  `oxistore-encrypt` now owns the bridge; `oxicrypto` dependency direction is strictly
+  downward.
+- All 13 workspace crates bumped to version `0.1.2` in lockstep.
+
+### Test coverage
+
+1004 tests passing, 4 skipped across 13 crates.
+
 ## [0.1.1] - 2026-06-04
 
 ### Added
@@ -106,5 +136,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Compression uses `oxiarc-deflate` exclusively (COOLJAPAN OxiARC stack).
 - TLS for cloud backends uses `oxitls` (rustls + rustcrypto provider, never `ring`).
 
+[0.1.2]: https://github.com/cool-japan/oxistore/compare/v0.1.1...HEAD
 [0.1.1]: https://github.com/cool-japan/oxistore/releases/tag/v0.1.1
 [0.1.0]: https://github.com/cool-japan/oxistore/releases/tag/v0.1.0

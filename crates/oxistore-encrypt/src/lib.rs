@@ -75,6 +75,8 @@
 //! ```
 
 pub mod aead;
+#[cfg(feature = "oxicrypto-aws-lc")]
+mod bridge_aws_lc;
 pub mod cell;
 pub mod cipher_builder;
 pub mod decorator;
@@ -89,6 +91,8 @@ pub use aead::{
     decrypt_with_aead, derive_cell_id, encrypt_with_aead, Aead, AeadKind, AesGcmSiv256Aead,
     XChaCha20Poly1305Aead,
 };
+#[cfg(feature = "oxicrypto-aws-lc")]
+pub use bridge_aws_lc::AwsLcOxistoreAead;
 pub use cell::{decrypt_cell, encrypt_cell, CellId, MIN_CIPHERTEXT_LEN};
 pub use cipher_builder::{AeadChoice, CipherBuilder};
 pub use decorator::EncryptedKv;

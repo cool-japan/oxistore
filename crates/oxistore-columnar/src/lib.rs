@@ -20,7 +20,8 @@
 //! ]));
 //! let mut table = ColumnarTable::new(Arc::clone(&schema));
 //! // ... push batches ...
-//! table.write_to(std::path::Path::new("/tmp/my.parquet")).expect("write failed");
+//! # let path = std::env::temp_dir().join("my.parquet");
+//! table.write_to(&path).expect("write failed");
 //! ```
 //!
 //! # Encoding policy

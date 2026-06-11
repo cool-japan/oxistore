@@ -87,7 +87,8 @@
 //! use oxistore_kv_sled::SledStore;
 //! use oxistore_core::KvStore;
 //!
-//! let store = SledStore::open("/tmp/my-sled").expect("open failed");
+//! # let path = std::env::temp_dir().join("my-sled");
+//! let store = SledStore::open(&path).expect("open failed");
 //! store.put(b"hello", b"world").expect("put failed");
 //! let val = store.get(b"hello").expect("get failed");
 //! assert_eq!(val.as_deref(), Some(b"world".as_ref()));
@@ -763,11 +764,12 @@ impl KvTxn for SledTxn<'_> {
 /// use oxistore_kv_sled::{SledStoreBuilder, SledMode};
 /// use oxistore_core::KvStore;
 ///
+/// # let path = std::env::temp_dir().join("my-sled-store");
 /// let store = SledStoreBuilder::new()
 ///     .cache_capacity(64 * 1024 * 1024)
 ///     .use_compression(true)
 ///     .mode(SledMode::HighThroughput)
-///     .build("/tmp/my-sled-store")
+///     .build(&path)
 ///     .expect("build failed");
 /// store.put(b"hello", b"world").expect("put failed");
 /// ```

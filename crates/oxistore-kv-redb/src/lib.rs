@@ -14,7 +14,8 @@
 //! use oxistore_kv_redb::RedbStore;
 //! use oxistore_core::KvStore;
 //!
-//! let store = RedbStore::open("/tmp/my.redb").expect("open failed");
+//! # let path = std::env::temp_dir().join("my.redb");
+//! let store = RedbStore::open(&path).expect("open failed");
 //! store.put(b"hello", b"world").expect("put failed");
 //! let val = store.get(b"hello").expect("get failed");
 //! assert_eq!(val.as_deref(), Some(b"world".as_ref()));
@@ -163,7 +164,8 @@ impl RedbStore {
     /// ```no_run
     /// # use oxistore_kv_redb::RedbStore;
     /// // Make sure all RedbStore handles on "my.redb" are dropped first.
-    /// let ok = RedbStore::check_integrity_at("/tmp/my.redb").expect("check");
+    /// # let path = std::env::temp_dir().join("my.redb");
+    /// let ok = RedbStore::check_integrity_at(&path).expect("check");
     /// assert!(ok, "database is clean");
     /// ```
     ///
@@ -1225,10 +1227,11 @@ impl KvSnapshot for RedbSnapshot {
 /// use oxistore_kv_redb::RedbStoreBuilder;
 /// use oxistore_core::KvStore;
 ///
+/// # let path = std::env::temp_dir().join("custom.redb");
 /// let store = RedbStoreBuilder::new()
 ///     .cache_size(64 * 1024 * 1024)
 ///     .table_name("my_table")
-///     .build("/tmp/custom.redb")
+///     .build(&path)
 ///     .expect("build failed");
 /// store.put(b"hello", b"world").expect("put failed");
 /// ```

@@ -47,7 +47,8 @@
 //! use oxistore_kv_fjall::FjallStore;
 //! use oxistore_core::KvStore;
 //!
-//! let store = FjallStore::open("/tmp/my-fjall").expect("open failed");
+//! # let path = std::env::temp_dir().join("my-fjall");
+//! let store = FjallStore::open(&path).expect("open failed");
 //! store.put(b"hello", b"world").expect("put failed");
 //! let val = store.get(b"hello").expect("get failed");
 //! assert_eq!(val.as_deref(), Some(b"world".as_ref()));

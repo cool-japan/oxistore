@@ -40,4 +40,3 @@ Facade crate re-exporting `oxistore-core` traits and providing `open` / `open_wi
 ## Integration
 - [x] Add cross-crate integration test: write data with `oxistore` KV, read via `oxistore-columnar`, cache with `oxistore-cache` (~40 SLOC) (done 2026-06-03, integration.rs cross_crate_kv_columnar_cache_workflow)
 - [x] Add integration test with `oxisql` — use `oxistore` as the underlying storage for `oxisql-embedded` (~30 SLOC) (done 2026-06-03, integration.rs oxisql_and_oxistore_coexist)
-- [ ] Ensure feature flag combinations compile cleanly — CI matrix testing all 2^N flag combinations (~20 SLOC CI) [DEFERRED: CI-only item]
