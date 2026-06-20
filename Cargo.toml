@@ -68,5 +68,5 @@ oxihttp-client = { version = "0.1.4", features = ["tls"] }
 hex = { version = "0.4" }
 proptest = { version = "1" }
 ahash = { version = "0.8" }
-oxisql-core = "0.1.2"
+oxisql-core = "0.2.1"
 keyring-core = { version = "1.0.0" }
