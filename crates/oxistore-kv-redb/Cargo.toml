@@ -20,6 +20,9 @@ serde_json.workspace = true
 criterion.workspace = true
 oxistore = { path = "../oxistore" }
 oxistore-cache = { path = "../oxistore-cache" }
+tokio.workspace = true
+oxisql-embedded = { version = "0.2.0", features = ["redb-storage"] }
+oxisql-core-02 = { package = "oxisql-core", version = "0.2.0" }
 
 [[bench]]
 name = "redb_ops"

@@ -27,6 +27,9 @@ oxistore-columnar = { path = "../oxistore-columnar" }
 oxistore-cache = { path = "../oxistore-cache", features = ["blob"] }
 oxistore = { path = "../oxistore", features = ["blob"] }
 arrow = { workspace = true }
+oxisql-embedded = { version = "0.2.0" }
+oxisql-core-02 = { package = "oxisql-core", version = "0.2.0" }
+sha2 = { workspace = true }
 
 [[bench]]
 name = "blob_ops"

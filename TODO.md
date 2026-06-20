@@ -1,6 +1,6 @@
 # OxiStore TODO
 
-**v0.1.2 — released 2026-06-10** (1004 tests, 4 skipped, all M0–M5 complete)
+**v0.1.3 — Unreleased** (1004 tests, 4 skipped, all M0–M5 complete)
 
 Milestones derived from `../phase3/oxistore_blueprint.md` section Phased milestones.
 

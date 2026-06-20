@@ -50,4 +50,4 @@ Fully functional KvStore implementation over sled 0.34. Supports get/put/delete,
 ## Integration
 - [x] Integration test with `oxistore` facade — open via `oxistore::open_with(StoreKind::Sled, path)` (~15 SLOC) (done 2026-06-03: 6 integration tests in `tests/integration_facade.rs` covering put/get, delete, range, persistence, txn, snapshot, prefix_scan, batch_write)
 - [x] Test `watch/subscribe` integration with `tokio` async runtime (~25 SLOC) (done 2026-06-03: 5 tokio integration tests in `tests/integration_tokio_watch.rs` — multi-thread, multiple events, cross-prefix isolation, delete events, flush_with_reclaim)
-- [ ] Verify sled backend can serve as persistent storage for `oxisql-embedded` (~20 SLOC) [DEFERRED — oxisql-embedded not yet implemented]
+- [x] Verify sled backend can serve as persistent storage for `oxisql-embedded` — `tests/oxisql_integration.rs` added with 8 tests (basic CRUD, persistence across reconnect, multi-table isolation, 1k-row count, UPDATE, NULL round-trip, DELETE all, concurrent reads) using `oxisql-embedded = "0.2.0"` with `features = ["sled-storage"]` as a crates.io dev-dep; 8/8 passed (done 2026-06-19)

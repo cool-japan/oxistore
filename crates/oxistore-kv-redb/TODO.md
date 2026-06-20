@@ -50,4 +50,4 @@ Fully functional KvStore implementation over redb. Supports get/put/delete, rang
 ## Integration
 - [x] Integration test with `oxistore` facade — `open_with(StoreKind::Redb, path)` and `open_in_memory(StoreKind::Redb)` tested in `tests/integration.rs` (done 2026-06-03)
 - [x] Test `CacheableKvStore` adapter wrapping `RedbStore` with `oxistore-cache::LruCache` — put/get/delete/miss/count/iter verified in `tests/integration.rs` (done 2026-06-03)
-- [ ] Verify `RedbStore` works as backend for `oxisql-embedded` persistent storage — BLOCKED: `oxisql-embedded` crate does not exist in workspace yet (~20 SLOC)
+- [x] Verify `RedbStore` works as backend for `oxisql-embedded` persistent storage — `tests/oxisql_integration.rs` added with 8 tests (basic CRUD, persistence across reconnect, in-memory ephemeral, multi-table isolation, 1k-row count, UPDATE, NULL round-trip, concurrent reads) using `oxisql-embedded = "0.2.0"` with `features = ["redb-storage"]` as a crates.io dev-dep; 8/8 passed (done 2026-06-19)

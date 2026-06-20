@@ -79,8 +79,9 @@ pub use writer::WriterConfig;
 /// [`ColumnarTable`] implements this trait; other in-memory or on-disk
 /// columnar containers may implement it to participate in the same ecosystem.
 ///
-/// All methods have default implementations that panic with a "not implemented"
-/// message so that partial implementations can be built incrementally.
+/// All methods are required; [`ColumnarTable`] provides the canonical
+/// implementation, and other columnar containers may implement the trait
+/// to participate in the same ecosystem.
 pub trait ColumnarStore {
     /// Return a reference to the store's Arrow [`Schema`].
     fn schema(&self) -> &Arc<Schema>;

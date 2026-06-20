@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-06-19
+
+### Changed
+
+- All workspace crates bumped from 0.1.2 → 0.1.3 (`version` in `[workspace.package]`).
+- `oxisql-core` dependency updated from 0.1.1 to 0.1.2.
+- `oxisql-pool` dev-dependency in `oxistore-encrypt` updated from 0.1.1 to 0.2.0.
+- `ColumnarStore` trait documentation clarified: all methods are now required (no default
+  panic implementations); `ColumnarTable` is the canonical implementation.
+
 ## [0.1.2] - 2026-06-10
 
 ### Added
@@ -136,6 +146,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Compression uses `oxiarc-deflate` exclusively (COOLJAPAN OxiARC stack).
 - TLS for cloud backends uses `oxitls` (rustls + rustcrypto provider, never `ring`).
 
-[0.1.2]: https://github.com/cool-japan/oxistore/compare/v0.1.1...HEAD
+[0.1.3]: https://github.com/cool-japan/oxistore/releases/tag/v0.1.3
+[0.1.2]: https://github.com/cool-japan/oxistore/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/cool-japan/oxistore/releases/tag/v0.1.1
 [0.1.0]: https://github.com/cool-japan/oxistore/releases/tag/v0.1.0
