@@ -63,7 +63,7 @@ quick-xml = { version = "0.40.1" }
 url = { version = "2.5.8" }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0" }
-oxihttp-client = { version = "0.1.4", features = ["tls"] }
+oxihttp-client = { version = "0.2.0", features = ["tls"] }
 hex = { version = "0.4" }
 proptest = { version = "1" }
 ahash = { version = "0.8" }
