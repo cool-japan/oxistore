@@ -21,7 +21,7 @@ criterion.workspace = true
 oxistore = { path = "../oxistore" }
 oxistore-cache = { path = "../oxistore-cache" }
 tokio.workspace = true
-oxisql-embedded = { version = "0.2.1", features = ["redb-storage"] }
+oxisql-embedded = { version = "0.3.0", features = ["redb-storage"] }
 oxisql-core-02 = { package = "oxisql-core", version = "0.2.1" }
 
 [[bench]]

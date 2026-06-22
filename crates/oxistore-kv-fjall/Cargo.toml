@@ -20,7 +20,7 @@ oxistore-kv-redb.workspace = true
 oxistore-kv-sled.workspace = true
 oxistore-core.workspace = true
 tokio.workspace = true
-oxisql-embedded = { version = "0.2.1", features = ["fjall-storage"] }
+oxisql-embedded = { version = "0.3.0", features = ["fjall-storage"] }
 oxisql-core-02 = { package = "oxisql-core", version = "0.2.1" }
 
 [[bench]]
