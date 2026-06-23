@@ -26,8 +26,8 @@ serde.workspace = true
 serde_json.workspace = true
 oxistore = { path = "../oxistore", features = ["kv-sled"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
-oxisql-embedded = { version = "0.3.0", features = ["sled-storage"] }
-oxisql-core-02 = { package = "oxisql-core", version = "0.3.0" }
+oxisql-embedded = { version = "0.3.1", features = ["sled-storage"] }
+oxisql-core-02 = { package = "oxisql-core", version = "0.3.1" }
 
 [[bench]]
 name = "sled_ops"
