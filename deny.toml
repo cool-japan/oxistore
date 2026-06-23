@@ -6,6 +6,8 @@ deny = [
     { name = "lmdb-sys" },
     { name = "ring" },
     { name = "openssl-sys" },
+    # Pure Rust Policy v2: aws-lc-rs backed AEAD bridge removed in 0.2.0.
+    { name = "aws-lc-sys" },
     # Parquet codec crates that must never appear in oxistore-columnar's dep tree.
     # oxistore-columnar uses default-features=false on parquet; these crates are
     # banned here as a tripwire to catch accidental codec feature activation.

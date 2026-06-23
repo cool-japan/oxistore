@@ -11,14 +11,14 @@ Files written by this crate use **UNCOMPRESSED** parquet-internal encoding (dict
 
 ```toml
 [dependencies]
-oxistore-columnar = "0.1.0"
+oxistore-columnar = "0.2.0"
 ```
 
 With OxiARC payload compression enabled:
 
 ```toml
 [dependencies]
-oxistore-columnar = { version = "0.1.0", features = ["compress"] }
+oxistore-columnar = { version = "0.2.0", features = ["compress"] }
 ```
 
 ## Quick Start

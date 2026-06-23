@@ -14,7 +14,7 @@ All cryptography is Pure Rust via the COOLJAPAN [`oxicrypto`] crate — XChaCha2
 
 ```toml
 [dependencies]
-oxistore-encrypt = "0.1.0"
+oxistore-encrypt = "0.2.0"
 ```
 
 `oxistore-encrypt` wraps any `KvStore`; pair it with a backend such as

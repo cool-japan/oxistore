@@ -12,7 +12,7 @@ In line with the COOLJAPAN Pure-Rust compression policy, this crate **never** de
 ```toml
 [dependencies]
 # Codec + Parquet shim require the `compress` feature.
-oxistore-compress = { version = "0.1.0", features = ["compress"] }
+oxistore-compress = { version = "0.2.0", features = ["compress"] }
 ```
 
 Without the `compress` feature only the `CompressError` type is compiled; the codec and Parquet shim are feature-gated.

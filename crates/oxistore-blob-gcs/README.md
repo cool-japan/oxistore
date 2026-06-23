@@ -11,8 +11,8 @@ The backend is **100% Pure Rust**. Service-account authentication uses the OAuth
 
 ```toml
 [dependencies]
-oxistore-blob-gcs = "0.1.0"
-oxistore-blob = "0.1.0"  # for the BlobStore trait + BlobError
+oxistore-blob-gcs = "0.2.0"
+oxistore-blob = "0.2.0"  # for the BlobStore trait + BlobError
 ```
 
 This crate has no Cargo features; all functionality is always available.

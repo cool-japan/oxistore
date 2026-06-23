@@ -11,8 +11,8 @@
 
 ```toml
 [dependencies]
-oxistore-kv-sled = "0.1.0"
-oxistore-core = "0.1.0"
+oxistore-kv-sled = "0.2.0"
+oxistore-core = "0.2.0"
 ```
 
 ## Quick Start
