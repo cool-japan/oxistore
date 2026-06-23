@@ -11,14 +11,14 @@ Every cache supports per-entry TTL (lazily expired on access) and bounded capaci
 
 ```toml
 [dependencies]
-oxistore-cache = "0.1.0"
+oxistore-cache = "0.2.0"
 ```
 
 Optional `blob` feature (enables the `oxistore-blob` caching adapter):
 
 ```toml
 [dependencies]
-oxistore-cache = { version = "0.1.0", features = ["blob"] }
+oxistore-cache = { version = "0.2.0", features = ["blob"] }
 ```
 
 ## Quick Start

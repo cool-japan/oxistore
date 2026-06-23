@@ -16,9 +16,9 @@ The non-negotiable goal: a fresh `rust:slim` container running
 `cargo build --workspace --no-default-features` produces a working KV store
 with no `apt-get install` and no C toolchain.
 
-## Status: v0.1.3 — Unreleased
+## Status: v0.2.0 — 2026-06-23
 
-All milestones M0–M5 are complete. **1004 tests passing** (4 skipped) across 13 crates.
+All milestones M0–M5 are complete. **1030 tests passing** (4 skipped) across 13 crates.
 25 433 lines of Rust code.
 
 | Milestone | Description | Status |
@@ -44,7 +44,7 @@ All milestones M0–M5 are complete. **1004 tests passing** (4 skipped) across 1
 | [`oxistore-blob-s3`](crates/oxistore-blob-s3) | S3 backend (Pure Rust: AWS SigV4 via `oxihttp-client` + `oxitls`, no `ring`) |
 | [`oxistore-blob-azure`](crates/oxistore-blob-azure) | Azure Blob Storage backend (HMAC-SHA256 Shared Key) |
 | [`oxistore-blob-gcs`](crates/oxistore-blob-gcs) | Google Cloud Storage backend (OAuth2 RS256 JWT) |
-| [`oxistore-encrypt`](crates/oxistore-encrypt) | Cell-level AEAD encryption via XChaCha20-Poly1305; `EncryptedKv<T,K,A>` decorator; `oxicrypto-aws-lc` feature for aws-lc-rs AEADs (FIPS) |
+| [`oxistore-encrypt`](crates/oxistore-encrypt) | Cell-level AEAD encryption via XChaCha20-Poly1305; `EncryptedKv<T,K,A>` decorator |
 | [`oxistore-compress`](crates/oxistore-compress) | OxiARC DEFLATE codec bridge for Parquet; no `flate2`/`zstd`/`brotli` |
 | [`oxistore`](crates/oxistore) | Facade: `open` / `open_with` / `open_in_memory` returning `Box<dyn KvStore>` |
 
@@ -54,7 +54,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-oxistore = "0.1.3"
+oxistore = "0.2.0"
 ```
 
 Basic key-value operations:
@@ -80,7 +80,7 @@ assert_eq!(val.as_deref(), Some(b"world".as_ref()));
 | `blob` | Local filesystem + in-memory blob storage | no |
 | `encrypt` | Cell-level AEAD encryption decorator | no |
 | `compress` | OxiARC DEFLATE compression codec | no |
-| `oxicrypto-aws-lc` | aws-lc-rs AEAD bridge (`AwsLcOxistoreAead`); pulls C-backed aws-lc-rs, feature-gated | no |
+
 
 ## Replaces (FFI being eliminated)
 

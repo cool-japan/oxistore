@@ -11,10 +11,10 @@ Within the OxiStore family, `oxistore-core` is the trait crate: key-value backen
 
 ```toml
 [dependencies]
-oxistore-core = "0.1.0"
+oxistore-core = "0.2.0"
 
 # With the typed KV adapter (serde-based):
-oxistore-core = { version = "0.1.0", features = ["serde-typed"] }
+oxistore-core = { version = "0.2.0", features = ["serde-typed"] }
 ```
 
 ## Quick Start

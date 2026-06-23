@@ -11,8 +11,8 @@ The backend is **Pure Rust and ring-free**. Requests are signed with AWS Signatu
 
 ```toml
 [dependencies]
-oxistore-blob-s3 = "0.1.0"
-oxistore-blob = "0.1.0"  # for the BlobStore trait + BlobError
+oxistore-blob-s3 = "0.2.0"
+oxistore-blob = "0.2.0"  # for the BlobStore trait + BlobError
 ```
 
 This crate has no Cargo features; all functionality is always available.

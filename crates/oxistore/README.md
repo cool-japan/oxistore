@@ -12,16 +12,16 @@ The facade also gathers the optional OxiStore layers — columnar (Parquet/Arrow
 ```toml
 [dependencies]
 # Default: redb B-tree backend
-oxistore = "0.1.0"
+oxistore = "0.2.0"
 
 # sled backend
-oxistore = { version = "0.1.0", default-features = false, features = ["kv-sled"] }
+oxistore = { version = "0.2.0", default-features = false, features = ["kv-sled"] }
 
 # fjall LSM-tree backend
-oxistore = { version = "0.1.0", default-features = false, features = ["kv-fjall"] }
+oxistore = { version = "0.2.0", default-features = false, features = ["kv-fjall"] }
 
 # All KV backends + cache + blob + columnar
-oxistore = { version = "0.1.0", features = ["kv-redb", "kv-sled", "kv-fjall", "cache", "blob", "columnar"] }
+oxistore = { version = "0.2.0", features = ["kv-redb", "kv-sled", "kv-fjall", "cache", "blob", "columnar"] }
 ```
 
 ## Quick Start

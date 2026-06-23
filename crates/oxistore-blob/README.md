@@ -14,7 +14,7 @@ The trait ships a rich set of **default methods** (copy, rename, batch/prefix de
 
 ```toml
 [dependencies]
-oxistore-blob = "0.1.0"
+oxistore-blob = "0.2.0"
 ```
 
 ## Quick Start

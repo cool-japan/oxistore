@@ -5,11 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.4] - Unreleased
+## [0.2.0] - 2026-06-23
 
-### Added
+### Changed
 
-- (placeholder)
+- All 13 workspace crates bumped to version `0.2.0` in lockstep.
+- `oxisql-core` workspace dependency bumped from 0.1.2 to 0.3.0.
+- `oxisql-pool` dev-dependency in `oxistore-encrypt` bumped from 0.2.0 to 0.3.0.
+- `oxihttp-client` dependency bumped from 0.1.4 to 0.2.0.
+- `oxicrypto` dependency bumped from 0.1.3 to 0.2.0.
+- `oxicrypto-sig` dependency bumped from 0.1.3 to 0.2.0.
+
+### Removed
+
+- **`oxistore-encrypt`**: `oxicrypto-aws-lc` feature gate removed — the C-backed aws-lc-rs
+  AEAD bridge (`AwsLcOxistoreAead`, `bridge_aws_lc.rs`) has been deleted as part of Pure
+  Rust Policy v2 compliance. The `oxicrypto-adapter-aws-lc` dependency is removed from
+  `oxistore-encrypt` entirely.
+
+### Security / Compliance
+
+- **Pure Rust Policy v2**: The `oxistore` workspace is now fully C/C++/Fortran-free on
+  `--all-features` (not just default features). The last C-backed code path — the
+  `aws-lc-rs` AEAD bridge exposed via the `oxicrypto-aws-lc` feature — has been eliminated.
+  All AEAD operations are provided by `oxicrypto` (XChaCha20-Poly1305 via RustCrypto),
+  which is 100% Pure Rust.
 
 ## [0.1.3] - 2026-06-19
 
@@ -152,6 +172,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Compression uses `oxiarc-deflate` exclusively (COOLJAPAN OxiARC stack).
 - TLS for cloud backends uses `oxitls` (rustls + rustcrypto provider, never `ring`).
 
+[0.2.0]: https://github.com/cool-japan/oxistore/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/cool-japan/oxistore/releases/tag/v0.1.3
 [0.1.2]: https://github.com/cool-japan/oxistore/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/cool-japan/oxistore/releases/tag/v0.1.1
