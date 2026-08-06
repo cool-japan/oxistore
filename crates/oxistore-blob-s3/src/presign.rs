@@ -20,7 +20,8 @@
 
 use aws_credential_types::Credentials;
 use aws_sigv4::http_request::{
-    sign, SignableBody, SignableRequest, SignatureLocation, SigningSettings,
+    sign, PercentEncodingMode, SignableBody, SignableRequest, SignatureLocation, SigningSettings,
+    UriPathNormalizationMode,
 };
 use aws_sigv4::sign::v4;
 use oxistore_blob::BlobError;
@@ -83,6 +84,16 @@ impl S3BlobStore {
         let mut settings = SigningSettings::default();
         settings.signature_location = SignatureLocation::QueryParams;
         settings.expires_in = Some(ttl);
+        // Same `Single`/`Disabled` correction as header signing (see
+        // sigv4::sign_request) so the canonical path used for the signature
+        // matches the literal, single-encoded wire path from `object_url()`.
+        // `payload_checksum_kind` is intentionally left at its `NoHeader`
+        // default: presigned requests sign `SignableBody::UnsignedPayload`
+        // ("UNSIGNED-PAYLOAD"), and `x-amz-content-sha256` is only emitted as
+        // a *header* for `SignatureLocation::Headers` requests, so it has no
+        // effect here.
+        settings.percent_encoding_mode = PercentEncodingMode::Single;
+        settings.uri_path_normalization_mode = UriPathNormalizationMode::Disabled;
 
         let signing_params: aws_sigv4::http_request::SigningParams = v4::SigningParams::builder()
             .identity(&identity)
@@ -161,6 +172,34 @@ mod tests {
         assert!(
             url.contains("X-Amz-Expires"),
             "should contain X-Amz-Expires: {url}"
+        );
+    }
+
+    /// Regression test for the presign half of the `SigningSettings::default()`
+    /// fix: the canonical path signed for a presigned URL must be
+    /// *single*-encoded, matching the literal, single-encoded wire path
+    /// produced by `object_url()` — the `Double` default would sign
+    /// `/testbucket/my%2520file.txt` while the actual URL stays
+    /// `/testbucket/my%20file.txt`, and real S3 would reject the resulting
+    /// presigned URL with `SignatureDoesNotMatch`. Presigning is entirely
+    /// offline (no HTTP round-trip), so this needs no mock server.
+    #[test]
+    fn presign_get_path_is_single_encoded() {
+        let store = test_store();
+        let url = store
+            .presign_get("my file.txt", Duration::from_secs(3600))
+            .expect("presign get");
+
+        // Assert on the path portion (before the `?`) only, so this doesn't
+        // couple to how query parameters happen to be encoded.
+        let path = url.split('?').next().expect("url has a path portion");
+        assert!(
+            path.contains("/testbucket/my%20file.txt"),
+            "expected single-encoded space in presigned path, got: {path}"
+        );
+        assert!(
+            !path.contains("%2520"),
+            "presigned path must not be double-encoded: {path}"
         );
     }
 

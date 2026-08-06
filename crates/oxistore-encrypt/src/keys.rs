@@ -11,7 +11,7 @@
 //! | Type | Status |
 //! |------|--------|
 //! | [`StaticKey`] | In-memory `Vec<u8>`; suitable for tests and simple deployments. |
-//! | [`KeyringKey`] | OS keyring backed: macOS Keychain, Linux secret-service, Windows Credential Manager. Enable with `os-keyring` feature for real retrieval; stub otherwise. |
+//! | [`KeyringKey`] | Backed by a `keyring-core` [`CredentialStore`](https://docs.rs/keyring-core). Enable the `os-keyring` feature and register a concrete store (via `keyring_core::set_default_store`) for real retrieval; returns [`EncryptError::KeyringUnavailable`] when the feature is off. |
 
 use crate::error::EncryptError;
 
@@ -88,29 +88,38 @@ impl KeyProvider for StaticKey {
 
 // ── KeyringKey ────────────────────────────────────────────────────────────────
 
-/// A key provider backed by the OS keyring.
+/// A key provider backed by a `keyring-core` credential store.
 ///
 /// When the `os-keyring` feature is **enabled**, `KeyringKey::get_key` queries
-/// the OS credential store (macOS Keychain, Linux secret-service via D-Bus,
-/// Windows Credential Manager) using the `keyring` crate (v4).
-///
-/// The stored value must be a hex-encoded 32-byte key (64 hex characters).
-/// This encoding is chosen because OS keyrings typically store UTF-8 text
-/// secrets; raw binary secrets can be stored as hex without ambiguity.
-///
-/// When the `os-keyring` feature is **disabled** the implementation falls back
-/// to the original stub behaviour and always returns
+/// the process-wide credential store registered via
+/// `keyring_core::set_default_store`.  `keyring-core` (v1.0) is deliberately
+/// *store-agnostic*: it ships **no** OS backend of its own.  Production
+/// deployments must register a concrete [`CredentialStore`] implementation
+/// (for example an OS-keyring backend such as macOS Keychain, Linux
+/// secret-service, or Windows Credential Manager) **before** the first call to
+/// [`KeyProvider::get_key`].  Until a store is registered, `keyring-core`
+/// returns `NoDefaultStore`, which this provider surfaces as
 /// [`EncryptError::KeyringUnavailable`].
 ///
-/// # Storing a key
+/// The stored value must be a hex-encoded 32-byte key (64 hex characters).
+/// This encoding is chosen because credential stores typically hold UTF-8 text
+/// secrets; raw binary secrets can be stored as hex without ambiguity.
 ///
-/// Use the `keyring` CLI or the `keyring::Entry` API to store a key:
+/// When the `os-keyring` feature is **disabled** the implementation always
+/// returns [`EncryptError::KeyringUnavailable`].
 ///
-/// ```sh
-/// # Generate a random 32-byte key as hex and store it in the keyring:
-/// key=$(openssl rand -hex 32)
-/// # Store via keyring CLI (or use the keyring crate Entry API directly):
-/// echo "$key" | secret-tool store --label="oxistore: my-app-enc-key" service oxistore username my-app-enc-key
+/// [`CredentialStore`]: https://docs.rs/keyring-core
+///
+/// # Registering a store (production)
+///
+/// ```no_run
+/// # #[cfg(feature = "os-keyring")]
+/// # {
+/// // At process startup, register a concrete credential store exactly once.
+/// // (Any type implementing `keyring_core::CredentialStoreApi` works.)
+/// let store = keyring_core::mock::Store::new().expect("build store");
+/// keyring_core::set_default_store(store);
+/// # }
 /// ```
 ///
 /// # Security

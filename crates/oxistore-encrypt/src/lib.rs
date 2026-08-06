@@ -13,7 +13,9 @@
 //! - **[`KeyProvider`]** — a fallible source of a 32-byte XChaCha20-Poly1305 key,
 //!   with two built-in implementations:
 //!   - [`StaticKey`] — in-memory `Vec<u8>` for tests and simple deployments.
-//!   - [`KeyringKey`] — OS keyring stub (M6 wiring pending; returns an error now).
+//!   - [`KeyringKey`] — backed by a `keyring-core` credential store (enable the
+//!     `os-keyring` feature and register a store via
+//!     `keyring_core::set_default_store`; returns an error when the feature is off).
 //!
 //! - **[`encrypt_cell`] / [`decrypt_cell`]** — low-level AEAD helpers with the
 //!   wire format `nonce (24 bytes) ‖ ciphertext ‖ Poly1305-tag (16 bytes)`.
@@ -79,9 +81,13 @@ pub mod cell;
 pub mod cipher_builder;
 pub mod decorator;
 pub mod envelope;
+pub mod envelope_snapshot;
+pub mod envelope_txn;
 pub mod error;
 pub mod keyring;
 pub mod keys;
+#[cfg(feature = "oxicrypto-pkcs11")]
+pub mod pkcs11;
 pub mod snapshot;
 pub mod txn;
 
@@ -93,9 +99,13 @@ pub use cell::{decrypt_cell, encrypt_cell, CellId, MIN_CIPHERTEXT_LEN};
 pub use cipher_builder::{AeadChoice, CipherBuilder};
 pub use decorator::EncryptedKv;
 pub use envelope::{rotate_all_keys, EncryptedKvEnvelope, EnvelopeCipher, MIN_ENVELOPE_LEN};
+pub use envelope_snapshot::EnvelopeSnapshot;
+pub use envelope_txn::EnvelopeTxn;
 pub use error::EncryptError;
 pub use keyring::{generate_salt, KeyVersion, Keyring};
 pub use keys::{KeyProvider, KeyringKey, StaticKey};
+#[cfg(feature = "oxicrypto-pkcs11")]
+pub use pkcs11::{validate_pkcs11_key, Pkcs11KeyProvider};
 pub use snapshot::EncryptedSnapshot;
 pub use txn::EncryptedTxn;
 // Re-export the KvStore trait for convenience.

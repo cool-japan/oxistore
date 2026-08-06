@@ -28,8 +28,11 @@ fn open_temp() -> FjallStore {
 #[test]
 fn ttl_basic_expiry() {
     let store = open_temp();
+    // 200ms (rather than a razor-thin 50ms) so the "must be present"
+    // assertion immediately below doesn't race the TTL under a loaded,
+    // highly-parallel test run.
     store
-        .put_with_ttl(b"key1", b"val1", Duration::from_millis(50))
+        .put_with_ttl(b"key1", b"val1", Duration::from_millis(200))
         .expect("put_with_ttl");
 
     assert_eq!(
@@ -38,7 +41,7 @@ fn ttl_basic_expiry() {
         "key must be present before TTL expires"
     );
 
-    std::thread::sleep(Duration::from_millis(150));
+    std::thread::sleep(Duration::from_millis(500));
 
     assert_eq!(
         store.get(b"key1").expect("get after expiry"),
@@ -66,8 +69,10 @@ fn ttl_expire_on_existing_key() {
     let store = open_temp();
     store.put(b"key2", b"val2").expect("put");
 
+    // See `ttl_basic_expiry` for why this uses 200ms rather than a
+    // razor-thin 50ms.
     store
-        .expire(b"key2", Duration::from_millis(50))
+        .expire(b"key2", Duration::from_millis(200))
         .expect("expire");
 
     assert_eq!(
@@ -76,7 +81,7 @@ fn ttl_expire_on_existing_key() {
         "key must be present before expire elapses"
     );
 
-    std::thread::sleep(Duration::from_millis(150));
+    std::thread::sleep(Duration::from_millis(500));
 
     assert_eq!(
         store.get(b"key2").expect("get after expire"),
@@ -211,5 +216,183 @@ fn ttl_unsupported_error_display() {
     assert!(
         format!("{err}").contains("TTL not supported"),
         "Unsupported error must include message"
+    );
+}
+
+/// An expired key must be invisible to `range`, `prefix_scan`, `iter`, and
+/// `count` — not just `get`. Before the fix, `get` honored TTL but these
+/// scan/iteration paths returned the stale entry unconditionally (fjall was
+/// the one backend that never received the sled/redb TTL-scan fix).
+#[test]
+fn ttl_expired_key_invisible_to_scans() {
+    let store = open_temp();
+
+    store.put(b"pfx:alive", b"a").expect("put");
+    store
+        .put_with_ttl(b"pfx:dying", b"d", Duration::from_millis(50))
+        .expect("put_with_ttl");
+
+    std::thread::sleep(Duration::from_millis(150));
+
+    // range() covering both keys must exclude the expired one.
+    let ranged: Vec<Vec<u8>> = store
+        .range(b"pfx:", b"pfx;")
+        .expect("range")
+        .map(|r| r.expect("range item").0)
+        .collect();
+    assert_eq!(
+        ranged,
+        vec![b"pfx:alive".to_vec()],
+        "range() must not return an expired key"
+    );
+
+    // prefix_scan() must also exclude it.
+    let scanned: Vec<Vec<u8>> = store
+        .prefix_scan(b"pfx:")
+        .expect("prefix_scan")
+        .map(|r| r.expect("prefix_scan item").0)
+        .collect();
+    assert_eq!(
+        scanned,
+        vec![b"pfx:alive".to_vec()],
+        "prefix_scan() must not return an expired key"
+    );
+
+    // iter() over the whole store must not surface it either.
+    let all: Vec<Vec<u8>> = store
+        .iter()
+        .expect("iter")
+        .map(|r| r.expect("iter item").0)
+        .collect();
+    assert!(
+        !all.contains(&b"pfx:dying".to_vec()),
+        "iter() must not return an expired key: {all:?}"
+    );
+    assert!(all.contains(&b"pfx:alive".to_vec()));
+
+    // count() must not count the expired entry.
+    assert_eq!(
+        store.count().expect("count"),
+        1,
+        "count() must not include an expired key"
+    );
+
+    // keys() must not include it either.
+    let ks: Vec<Vec<u8>> = store
+        .keys()
+        .expect("keys")
+        .map(|r| r.expect("keys item"))
+        .collect();
+    assert!(!ks.contains(&b"pfx:dying".to_vec()));
+}
+
+/// A snapshot must exclude keys that had already expired at capture time,
+/// keeping it TTL-consistent with `get()`.
+#[test]
+fn ttl_snapshot_excludes_expired_at_capture() {
+    let store = open_temp();
+
+    store.put(b"alive", b"a").expect("put alive");
+    store
+        .put_with_ttl(b"dead", b"d", Duration::from_millis(50))
+        .expect("put_with_ttl");
+
+    // Let the short-TTL key expire before capturing the snapshot.
+    std::thread::sleep(Duration::from_millis(150));
+
+    let snap = store.snapshot().expect("snapshot");
+    assert_eq!(
+        snap.get(b"alive").expect("snap get alive"),
+        Some(b"a".to_vec()),
+        "non-expired key must be present in snapshot"
+    );
+    assert_eq!(
+        snap.get(b"dead").expect("snap get dead"),
+        None,
+        "key expired before capture must be absent from snapshot"
+    );
+
+    // Range over the snapshot must also exclude the expired key.
+    let keys: Vec<Vec<u8>> = snap
+        .range(b"", b"\xff")
+        .expect("snap range")
+        .map(|r| r.expect("item").0)
+        .collect();
+    assert_eq!(keys, vec![b"alive".to_vec()]);
+}
+
+/// A transaction read must honor TTL: a committed-but-expired key is invisible
+/// to `get`/`contains`/`range` inside the transaction.
+#[test]
+fn ttl_txn_get_honors_ttl() {
+    let store = open_temp();
+
+    store.put(b"keep", b"k").expect("put keep");
+    store
+        .put_with_ttl(b"gone", b"g", Duration::from_millis(50))
+        .expect("put_with_ttl");
+
+    std::thread::sleep(Duration::from_millis(150));
+
+    let txn = store.transaction().expect("transaction");
+    assert_eq!(txn.get(b"keep").expect("txn get keep"), Some(b"k".to_vec()));
+    assert_eq!(
+        txn.get(b"gone").expect("txn get gone"),
+        None,
+        "expired committed key must be invisible inside a transaction"
+    );
+    assert!(!txn.contains(b"gone").expect("txn contains gone"));
+
+    let keys: Vec<Vec<u8>> = txn
+        .range(b"", b"\xff")
+        .expect("txn range")
+        .map(|r| r.expect("item").0)
+        .collect();
+    assert_eq!(
+        keys,
+        vec![b"keep".to_vec()],
+        "txn range must exclude the expired key"
+    );
+    txn.rollback().expect("rollback");
+}
+
+/// Overwriting a key that previously had a TTL via plain `put` must clear
+/// the stale expiry — the fresh value must not be evicted at the old TTL.
+#[test]
+fn ttl_put_clears_stale_expiry() {
+    let store = open_temp();
+
+    store
+        .put_with_ttl(b"key5", b"old", Duration::from_millis(80))
+        .expect("put_with_ttl");
+
+    // Overwrite with a plain put (no TTL) before the old TTL elapses.
+    store.put(b"key5", b"new").expect("put");
+
+    // Wait past the *original* TTL.
+    std::thread::sleep(Duration::from_millis(150));
+
+    assert_eq!(
+        store.get(b"key5").expect("get"),
+        Some(b"new".to_vec()),
+        "put() must clear the stale TTL from a prior put_with_ttl call"
+    );
+}
+
+/// Deleting a key that had a TTL must clear the sidecar TTL entry so `ttl()`
+/// cannot report an expiry for an absent key.
+#[test]
+fn ttl_delete_clears_sidecar_entry() {
+    let store = open_temp();
+
+    store
+        .put_with_ttl(b"key6", b"v", Duration::from_secs(60))
+        .expect("put_with_ttl");
+    store.delete(b"key6").expect("delete");
+
+    let result = store.ttl(b"key6");
+    assert!(
+        matches!(result, Err(StoreError::KeyNotFound)),
+        "ttl() on a deleted key must return KeyNotFound, got: {result:?}"
     );
 }

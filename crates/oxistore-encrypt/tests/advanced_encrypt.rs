@@ -1,7 +1,7 @@
 //! Advanced tests for `oxistore-encrypt`:
 //! - Key rotation round-trip: put 100 entries, rotate, verify readable with new key
 //! - Large-value encryption: 1MB and 10MB values round-trip
-//! - KeyringKey stub behavior: verify returns KeyringUnavailable
+//! - KeyringKey without the `os-keyring` feature: verify returns KeyringUnavailable
 //! - Concurrent access: multiple threads doing put/get simultaneously
 
 use std::collections::HashMap;
@@ -178,7 +178,7 @@ fn large_value_10mb_round_trip() {
     assert_eq!(got, payload, "10MB round-trip failed");
 }
 
-// ── KeyringKey stub behavior ──────────────────────────────────────────────────
+// ── KeyringKey without the `os-keyring` feature ────────────────────────────────
 
 #[test]
 fn keyring_key_returns_unavailable() {
@@ -188,7 +188,10 @@ fn keyring_key_returns_unavailable() {
     assert_eq!(key.label(), "my-app-key");
 
     let result = key.get_key();
-    assert!(result.is_err(), "KeyringKey stub must return Err");
+    assert!(
+        result.is_err(),
+        "KeyringKey must return Err without the os-keyring feature enabled"
+    );
 
     match result.unwrap_err() {
         EncryptError::KeyringUnavailable { label } => {
@@ -217,7 +220,7 @@ fn keyring_key_with_various_labels() {
         assert_eq!(key.label(), *label);
         assert!(
             key.get_key().is_err(),
-            "label {label:?}: expected Err from stub"
+            "label {label:?}: expected Err without the os-keyring feature enabled"
         );
     }
 }

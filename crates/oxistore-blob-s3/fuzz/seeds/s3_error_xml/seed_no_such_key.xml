@@ -1,0 +1,2 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message><Key>my/object.txt</Key><RequestId>4442587FB7D0A2F9</RequestId><HostId>abc123</HostId></Error>

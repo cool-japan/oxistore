@@ -1,0 +1,25 @@
+[package]
+name = "oxistore-interop-tests"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Cross-workspace oxisql interop tests for OxiStore (internal, not published)"
+publish = false
+
+# Cross-workspace `oxisql` interop tests live here so that publishable
+# `oxistore` crates carry no `oxisql` dependency edges — this keeps the
+# crates.io dependency graph acyclic (the `oxisql` workspace depends on
+# `oxistore`, so the reverse edge must never exist in a published crate).
+
+[dev-dependencies]
+oxisql-core.workspace = true
+oxisql-embedded = { workspace = true, features = ["redb-storage", "sled-storage", "fjall-storage"] }
+oxisql-pool = { workspace = true, features = ["embedded"] }
+oxistore-blob.workspace = true
+oxistore-encrypt.workspace = true
+bytes.workspace = true
+sha2.workspace = true
+tokio.workspace = true

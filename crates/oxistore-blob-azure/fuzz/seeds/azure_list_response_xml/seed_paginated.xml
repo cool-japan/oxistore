@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<EnumerationResults ServiceEndpoint="https://myaccount.blob.core.windows.net" ContainerName="c">
+  <MaxResults>1</MaxResults>
+  <Blobs>
+    <Blob>
+      <Name>a.bin</Name>
+      <Properties><Content-Length>1</Content-Length></Properties>
+    </Blob>
+  </Blobs>
+  <NextMarker>2!100!MDAwMDAy</NextMarker>
+</EnumerationResults>

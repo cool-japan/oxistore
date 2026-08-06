@@ -1,8 +1,10 @@
 //! Integration tests verifying that the redb backend in `oxisql-embedded`
 //! (`RedbEmbeddedConnection` / `RedbGlueStorage`) correctly persists SQL data
-//! to disk and that it is interoperable with `oxistore-kv-redb`.
+//! to disk. Lives in `oxistore-interop-tests` (not `oxistore-kv-redb`) so
+//! that the publishable `oxistore-kv-redb` crate carries no `oxisql`
+//! dependency edge.
 //!
-//! These tests use `oxisql-embedded = "0.2.0"` with `features = ["redb-storage"]`
+//! These tests use `oxisql-embedded = "0.4.0"` with `features = ["redb-storage"]`
 //! as a dev-dependency (crates.io version, no cross-workspace path coupling).
 //!
 //! Scenarios:
@@ -17,7 +19,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use oxisql_core_02::{Connection, Value};
+use oxisql_core::{Connection, Value};
 use oxisql_embedded::RedbEmbeddedConnection;
 
 // ── helpers ──────────────────────────────────────────────────────────────────

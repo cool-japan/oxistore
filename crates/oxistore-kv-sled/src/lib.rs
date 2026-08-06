@@ -203,6 +203,7 @@ impl SledStore {
     ///
     /// ```no_run
     /// # use oxistore_kv_sled::SledStore;
+    /// # use oxistore_core::KvStore;
     /// let store = SledStore::open_temporary().unwrap();
     /// store.set_merge_operator(|_key, old, new_bytes| {
     ///     let mut v = old.map(|o| o.to_vec()).unwrap_or_default();
@@ -320,6 +321,29 @@ impl SledStore {
             .size_on_disk()
             .map_err(|e| StoreError::Other(e.to_string()))
     }
+
+    /// Returns `true` if `key` has an associated TTL entry that has already
+    /// expired.
+    ///
+    /// This mirrors the expiry check performed by [`KvStore::get`] but does
+    /// not evict the entry — callers that iterate multiple keys (range,
+    /// prefix scan, full iteration, counting) use this to keep expired
+    /// entries out of scan results without mutating the tree mid-iteration.
+    /// A missing or malformed TTL entry is treated as "not expired", which
+    /// matches `get`'s fall-through behaviour.
+    fn is_ttl_expired(&self, key: &[u8]) -> Result<bool, StoreError> {
+        match self
+            .ttl_tree
+            .get(key)
+            .map_err(|e| StoreError::Other(e.to_string()))?
+        {
+            Some(expiry_bytes) => match decode_expiry(&expiry_bytes) {
+                Some(expiry_millis) => Ok(is_expired(expiry_millis)),
+                None => Ok(false),
+            },
+            None => Ok(false),
+        }
+    }
 }
 
 impl KvStore for SledStore {
@@ -352,66 +376,106 @@ impl KvStore for SledStore {
     fn put(&self, key: &[u8], value: &[u8]) -> Result<(), StoreError> {
         self.tree
             .insert(key, value)
-            .map(|_| ())
-            .map_err(|e| StoreError::Other(e.to_string()))
+            .map_err(|e| StoreError::Other(e.to_string()))?;
+        // A fresh, TTL-less write must not inherit a stale expiry from a
+        // previous `put_with_ttl`/`expire` call on this key — otherwise the
+        // new value would be silently evicted at the old expiry.
+        self.ttl_tree
+            .remove(key)
+            .map_err(|e| StoreError::Other(e.to_string()))?;
+        Ok(())
     }
 
     fn delete(&self, key: &[u8]) -> Result<(), StoreError> {
         self.tree
             .remove(key)
-            .map(|_| ())
-            .map_err(|e| StoreError::Other(e.to_string()))
+            .map_err(|e| StoreError::Other(e.to_string()))?;
+        // Clear any TTL sidecar entry so `ttl()` cannot report an expiry for
+        // an absent key, and so a future key reuse via `batch_write` doesn't
+        // inherit an orphaned entry.
+        self.ttl_tree
+            .remove(key)
+            .map_err(|e| StoreError::Other(e.to_string()))?;
+        Ok(())
     }
 
     fn range<'a>(&'a self, lo: &[u8], hi: &[u8]) -> Result<RangeIter<'a>, StoreError> {
         let lo_owned = lo.to_vec();
         let hi_owned = hi.to_vec();
-        let pairs: Vec<oxistore_core::RangeItem> = self
-            .tree
-            .range(lo_owned..hi_owned)
-            .map(|item| {
-                item.map(|(k, v)| (k.to_vec(), v.to_vec()))
-                    .map_err(|e| StoreError::Other(e.to_string()))
-            })
-            .collect();
+        let mut pairs: Vec<oxistore_core::RangeItem> = Vec::new();
+        for item in self.tree.range(lo_owned..hi_owned) {
+            let (k, v) = item.map_err(|e| StoreError::Other(e.to_string()))?;
+            if self.is_ttl_expired(&k)? {
+                continue;
+            }
+            pairs.push(Ok((k.to_vec(), v.to_vec())));
+        }
         Ok(Box::new(pairs.into_iter()))
     }
 
     fn prefix_scan<'a>(&'a self, prefix: &[u8]) -> Result<RangeIter<'a>, StoreError> {
         let prefix_owned = prefix.to_vec();
-        let pairs: Vec<oxistore_core::RangeItem> = self
-            .tree
-            .scan_prefix(&prefix_owned)
-            .map(|item| {
-                item.map(|(k, v)| (k.to_vec(), v.to_vec()))
-                    .map_err(|e| StoreError::Other(e.to_string()))
-            })
-            .collect();
+        let mut pairs: Vec<oxistore_core::RangeItem> = Vec::new();
+        for item in self.tree.scan_prefix(&prefix_owned) {
+            let (k, v) = item.map_err(|e| StoreError::Other(e.to_string()))?;
+            if self.is_ttl_expired(&k)? {
+                continue;
+            }
+            pairs.push(Ok((k.to_vec(), v.to_vec())));
+        }
         Ok(Box::new(pairs.into_iter()))
     }
 
     fn batch_write(&self, pairs: &[(&[u8], &[u8])]) -> Result<(), StoreError> {
         let mut batch = sled::Batch::default();
+        let mut ttl_batch = sled::Batch::default();
         for &(k, v) in pairs {
             batch.insert(k, v);
+            ttl_batch.remove(k);
         }
         self.tree
             .apply_batch(batch)
-            .map_err(|e| StoreError::Other(e.to_string()))
+            .map_err(|e| StoreError::Other(e.to_string()))?;
+        // Same stale-TTL-clear as `put` — a batch write is a TTL-less write
+        // for every key it touches, so it must not inherit a stale expiry
+        // from an earlier `put_with_ttl`/`expire` call on any of those keys.
+        self.ttl_tree
+            .apply_batch(ttl_batch)
+            .map_err(|e| StoreError::Other(e.to_string()))?;
+        Ok(())
     }
 
     fn batch_delete(&self, keys: &[&[u8]]) -> Result<(), StoreError> {
         let mut batch = sled::Batch::default();
+        let mut ttl_batch = sled::Batch::default();
         for &k in keys {
             batch.remove(k);
+            ttl_batch.remove(k);
         }
         self.tree
             .apply_batch(batch)
-            .map_err(|e| StoreError::Other(e.to_string()))
+            .map_err(|e| StoreError::Other(e.to_string()))?;
+        // Clear TTL sidecar entries so `ttl()` cannot report an expiry for a
+        // now-absent key.
+        self.ttl_tree
+            .apply_batch(ttl_batch)
+            .map_err(|e| StoreError::Other(e.to_string()))?;
+        Ok(())
     }
 
     fn count(&self) -> Result<u64, StoreError> {
-        Ok(self.tree.len() as u64)
+        // `sled::Tree::len` counts raw entries, including those with an
+        // expired-but-not-yet-evicted TTL, so it must not be used directly:
+        // filter each key against the TTL tree to match `get`'s visibility.
+        let mut count = 0u64;
+        for item in self.tree.iter() {
+            let (k, _v) = item.map_err(|e| StoreError::Other(e.to_string()))?;
+            if self.is_ttl_expired(&k)? {
+                continue;
+            }
+            count += 1;
+        }
+        Ok(count)
     }
 
     fn size_on_disk(&self) -> Result<u64, StoreError> {
@@ -421,26 +485,29 @@ impl KvStore for SledStore {
     }
 
     fn iter<'a>(&'a self) -> Result<RangeIter<'a>, StoreError> {
-        let pairs: Vec<oxistore_core::RangeItem> = self
-            .tree
-            .iter()
-            .map(|item| {
-                item.map(|(k, v)| (k.to_vec(), v.to_vec()))
-                    .map_err(|e| StoreError::Other(e.to_string()))
-            })
-            .collect();
+        let mut pairs: Vec<oxistore_core::RangeItem> = Vec::new();
+        for item in self.tree.iter() {
+            let (k, v) = item.map_err(|e| StoreError::Other(e.to_string()))?;
+            if self.is_ttl_expired(&k)? {
+                continue;
+            }
+            pairs.push(Ok((k.to_vec(), v.to_vec())));
+        }
         Ok(Box::new(pairs.into_iter()))
     }
 
     fn keys<'a>(&'a self) -> Result<KeysIter<'a>, StoreError> {
-        let keys: Vec<Result<Vec<u8>, StoreError>> = self
-            .tree
-            .iter()
-            .map(|item| {
-                item.map(|(k, _v)| k.to_vec())
-                    .map_err(|e| StoreError::Other(e.to_string()))
-            })
-            .collect();
+        let mut keys: Vec<Result<Vec<u8>, StoreError>> = Vec::new();
+        for item in self.tree.iter() {
+            match item {
+                Ok((k, _v)) => match self.is_ttl_expired(&k) {
+                    Ok(true) => continue,
+                    Ok(false) => keys.push(Ok(k.to_vec())),
+                    Err(e) => keys.push(Err(e)),
+                },
+                Err(e) => keys.push(Err(StoreError::Other(e.to_string()))),
+            }
+        }
         Ok(Box::new(keys.into_iter()))
     }
 
@@ -455,7 +522,15 @@ impl KvStore for SledStore {
             .compare_and_swap(key, expected, Some(new_value))
             .map_err(|e| StoreError::Other(e.to_string()))?
         {
-            Ok(()) => Ok(true),
+            Ok(()) => {
+                // A successful swap is a TTL-less write, same as `put` — it
+                // must not leave a stale TTL sidecar entry from an earlier
+                // `put_with_ttl`/`expire` call on this key.
+                self.ttl_tree
+                    .remove(key)
+                    .map_err(|e| StoreError::Other(e.to_string()))?;
+                Ok(true)
+            }
             Err(_cas_err) => Ok(false),
         }
     }
@@ -491,6 +566,7 @@ impl KvStore for SledStore {
     fn transaction(&self) -> Result<Box<dyn KvTxn + '_>, StoreError> {
         Ok(Box::new(SledTxn {
             tree: &self.tree,
+            ttl_tree: &self.ttl_tree,
             ops: Vec::new(),
             overlay: BTreeMap::new(),
             rolled_back: false,
@@ -498,10 +574,29 @@ impl KvStore for SledStore {
     }
 
     fn snapshot(&self) -> Result<Box<dyn KvSnapshot + '_>, StoreError> {
+        // Collect the set of keys already expired as of this instant so the
+        // snapshot is TTL-consistent with `get()`/scans (which honor TTL).
+        // sled 0.34 has no MVCC/fork snapshot API, so a materialised copy is
+        // the only option; filtering expired keys at capture time is the
+        // correct point-in-time semantic.
+        let mut expired: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
+        for item in self.ttl_tree.iter() {
+            let (key, expiry_bytes) = item.map_err(|e| StoreError::Other(e.to_string()))?;
+            if let Some(expiry_millis) = decode_expiry(&expiry_bytes) {
+                if is_expired(expiry_millis) {
+                    expired.insert(key.to_vec());
+                }
+            }
+        }
+
         let mut map = std::collections::BTreeMap::new();
         for item in self.tree.iter() {
             let (k, v) = item.map_err(|e| StoreError::Other(e.to_string()))?;
-            map.insert(k.to_vec(), v.to_vec());
+            let key = k.to_vec();
+            if expired.contains(&key) {
+                continue; // key had already expired at snapshot capture time
+            }
+            map.insert(key, v.to_vec());
         }
         Ok(Box::new(SledSnapshot { data: map }))
     }
@@ -644,10 +739,31 @@ enum TxnOp {
 /// puts and deletes are visible immediately within the transaction.
 pub struct SledTxn<'a> {
     tree: &'a sled::Tree,
+    /// TTL sidecar tree, so committed-but-expired keys stay invisible to reads.
+    ttl_tree: &'a sled::Tree,
     ops: Vec<SledOp>,
     /// Local overlay for read-your-writes.
     overlay: BTreeMap<Vec<u8>, TxnOp>,
     rolled_back: bool,
+}
+
+impl SledTxn<'_> {
+    /// Whether a committed key has an elapsed TTL as of now.
+    ///
+    /// Transactions are a *live* view, so TTL is evaluated at read time
+    /// (consistent with `SledStore::get`).  Reads never mutate the store, so an
+    /// expired key is merely hidden here; physical removal happens on the next
+    /// store-level access or `purge_expired`.
+    fn committed_key_expired(&self, key: &[u8]) -> Result<bool, StoreError> {
+        match self
+            .ttl_tree
+            .get(key)
+            .map_err(|e| StoreError::Other(e.to_string()))?
+        {
+            Some(bytes) => Ok(decode_expiry(&bytes).map(is_expired).unwrap_or(false)),
+            None => Ok(false),
+        }
+    }
 }
 
 impl KvTxn for SledTxn<'_> {
@@ -659,7 +775,10 @@ impl KvTxn for SledTxn<'_> {
                 TxnOp::Delete => Ok(None),
             };
         }
-        // Fall through to committed state.
+        // Fall through to committed state, honoring TTL.
+        if self.committed_key_expired(key)? {
+            return Ok(None);
+        }
         self.tree
             .get(key)
             .map(|opt| opt.map(|iv| iv.to_vec()))
@@ -687,11 +806,16 @@ impl KvTxn for SledTxn<'_> {
         let lo_owned = lo.to_vec();
         let hi_owned = hi.to_vec();
 
-        // Start with committed data.
+        // Start with committed data, skipping any committed key whose TTL has
+        // already elapsed (consistent with `get`).
         let mut merged: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
         for item in self.tree.range(lo_owned.clone()..hi_owned.clone()) {
             let (k, v) = item.map_err(|e| StoreError::Other(e.to_string()))?;
-            merged.insert(k.to_vec(), v.to_vec());
+            let key = k.to_vec();
+            if self.committed_key_expired(&key)? {
+                continue;
+            }
+            merged.insert(key, v.to_vec());
         }
 
         // Apply overlay.
@@ -717,6 +841,7 @@ impl KvTxn for SledTxn<'_> {
         }
         let ops = self.ops;
         let tree = self.tree;
+        let ttl_tree = self.ttl_tree;
         tree.transaction(
             |tx| -> sled::transaction::ConflictableTransactionResult<(), ()> {
                 for op in &ops {
@@ -735,7 +860,24 @@ impl KvTxn for SledTxn<'_> {
         .map_err(|e: sled::transaction::TransactionError<()>| match e {
             sled::transaction::TransactionError::Abort(()) => StoreError::TxnConflict,
             sled::transaction::TransactionError::Storage(se) => StoreError::Other(se.to_string()),
-        })
+        })?;
+
+        // Clear stale TTL sidecar entries for every key this transaction
+        // touched (put or delete) — mirrors the non-transactional `put`
+        // fix so a TTL-less write through a transaction cannot inherit a
+        // stale expiry, and a deleted key cannot resurrect with a phantom
+        // TTL. Applied after the data commit succeeds, consistent with how
+        // `put`/`batch_write` sequence their own tree-then-ttl_tree writes.
+        for op in &ops {
+            let key = match op {
+                SledOp::Put(k, _) => k,
+                SledOp::Delete(k) => k,
+            };
+            ttl_tree
+                .remove(key.as_slice())
+                .map_err(|e| StoreError::Other(e.to_string()))?;
+        }
+        Ok(())
     }
 
     fn rollback(mut self: Box<Self>) -> Result<(), StoreError> {
@@ -905,6 +1047,14 @@ impl SledStoreBuilder {
 /// Returned by [`KvStore::snapshot`] / [`SledStore::snapshot`].  The data is
 /// frozen at the moment `snapshot()` is called; subsequent writes to the live
 /// store are not reflected here.
+///
+/// # TTL consistency
+///
+/// The snapshot reflects the **TTL-filtered** state of the store as of capture:
+/// keys whose TTL had already elapsed when `snapshot()` was called are excluded,
+/// matching what `get()` and the scan APIs would return at that instant.  Keys
+/// that expire *after* capture remain visible through the snapshot, because a
+/// snapshot is by definition an immutable point-in-time view.
 pub struct SledSnapshot {
     data: std::collections::BTreeMap<Vec<u8>, Vec<u8>>,
 }
@@ -952,8 +1102,8 @@ impl KvSnapshot for SledSnapshot {
 ///
 /// let store: TypedSledStore<String, u64> =
 ///     TypedSledStore::open_temporary().expect("open failed");
-/// store.put_typed("counter", &42u64).expect("put failed");
-/// let v: Option<u64> = store.get_typed("counter").expect("get failed");
+/// store.put_typed("counter".to_string(), &42u64).expect("put failed");
+/// let v: Option<u64> = store.get_typed("counter".to_string()).expect("get failed");
 /// assert_eq!(v, Some(42));
 /// # }
 /// ```

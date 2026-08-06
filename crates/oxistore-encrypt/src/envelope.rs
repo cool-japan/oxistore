@@ -466,15 +466,19 @@ impl<S: KvStore> KvStore for EncryptedKvEnvelope<S> {
     }
 
     fn transaction(&self) -> Result<Box<dyn KvTxn + '_>, StoreError> {
-        Err(StoreError::Other(
-            "EncryptedKvEnvelope: encrypted transactions not yet supported".to_string(),
-        ))
+        let inner = self.inner.transaction()?;
+        Ok(Box::new(crate::envelope_txn::EnvelopeTxn::new(
+            inner,
+            self.cipher.clone(),
+        )))
     }
 
     fn snapshot(&self) -> Result<Box<dyn KvSnapshot + '_>, StoreError> {
-        Err(StoreError::Other(
-            "EncryptedKvEnvelope: encrypted snapshots not yet supported".to_string(),
-        ))
+        let inner = self.inner.snapshot()?;
+        Ok(Box::new(crate::envelope_snapshot::EnvelopeSnapshot::new(
+            inner,
+            self.cipher.clone(),
+        )))
     }
 
     fn iter<'a>(&'a self) -> Result<RangeIter<'a>, StoreError> {

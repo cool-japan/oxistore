@@ -18,9 +18,6 @@ async-helpers = ["dep:tokio"]
 blob = ["dep:oxistore-blob", "dep:bytes", "dep:async-trait", "dep:tokio"]
 ## Enables `ColumnarRowGroupCache` — caches hot Parquet row groups from oxistore-columnar.
 columnar = ["dep:oxistore-columnar", "dep:arrow", "dep:parquet"]
-## Enables `SqlQueryCache` and `SqlPlanCache` — caches query results and prepared
-## statement plans from oxisql-core.
-sql = ["dep:oxisql-core"]
 
 [dependencies]
 hashlink = { workspace = true }
@@ -33,7 +30,6 @@ tokio = { workspace = true, optional = true }
 oxistore-columnar = { workspace = true, optional = true }
 arrow = { workspace = true, optional = true }
 parquet = { workspace = true, optional = true }
-oxisql-core = { workspace = true, optional = true }
 
 [dev-dependencies]
 criterion = { workspace = true }

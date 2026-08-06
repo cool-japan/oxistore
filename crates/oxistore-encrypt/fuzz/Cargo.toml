@@ -1,0 +1,34 @@
+[package]
+name = "oxistore-encrypt-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# Detach from the parent `oxistore` workspace: this crate is intentionally
+# NOT listed in the root Cargo.toml's `[workspace].members`, and libfuzzer
+# targets pull nightly-only machinery (`libfuzzer-sys`) that must not affect
+# the main workspace's dependency resolution or `cargo build --workspace`.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.oxistore-encrypt]
+path = ".."
+
+[[bin]]
+name = "envelope_decrypt"
+path = "fuzz_targets/envelope_decrypt.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cell_decrypt"
+path = "fuzz_targets/cell_decrypt.rs"
+test = false
+doc = false
+bench = false

@@ -186,6 +186,7 @@ Building blocks for W-TinyLFU, usable directly:
 - [`oxistore`](https://crates.io/crates/oxistore) — the storage facade; enable the `cache` feature to re-export this crate.
 - [`oxistore-core`](https://crates.io/crates/oxistore-core) — the `KvStore` / `KvTxn` / `StoreError` traits used by the write adapters.
 - [`oxistore-blob`](https://crates.io/crates/oxistore-blob) — the `BlobStore` trait wrapped by `BlobCache`.
+- `oxisql-cache` (in the `oxisql` repo) — SQL query-result and prepared-plan caching (`SqlQueryCache`, `SqlPlanCache`, `CachedQueryRunner`) built on top of this crate. That functionality previously lived here behind a `sql` feature; it moved out so `oxistore-cache` carries no `oxisql-*` dependency. (No crates.io link yet — `oxisql-cache` depends on this crate, so it publishes after `oxistore-cache`.)
 
 ## License
 

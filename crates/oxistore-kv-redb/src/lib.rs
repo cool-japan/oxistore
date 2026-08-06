@@ -43,12 +43,61 @@ use std::sync::{Arc, Mutex};
 use oxistore_core::{
     expiry_epoch_millis, is_expired, KeysIter, KvSnapshot, KvStore, KvTxn, RangeIter, StoreError,
 };
-use redb::{
-    ReadTransaction, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition,
-};
+use redb::{ReadOnlyTable, ReadTransaction, ReadableDatabase, ReadableTable, TableDefinition};
 
 /// redb table definition for TTL expiry timestamps (unix epoch milliseconds).
 const TTL_TABLE: TableDefinition<&[u8], u64> = TableDefinition::new("__ttl__");
+
+/// Returns `true` if `key` has an associated TTL entry (in an already-open
+/// `TTL_TABLE` read view) that has already expired.
+///
+/// Mirrors the expiry check performed by [`KvStore::get`] but does not
+/// evict — callers that iterate multiple keys (range, prefix scan, full
+/// iteration, counting, key listing) use this to keep expired entries out
+/// of scan results without opening a nested write transaction mid-scan. A
+/// missing TTL entry is treated as "not expired", matching `get`'s
+/// fall-through behaviour.
+fn is_ttl_expired(
+    ttl_table: &ReadOnlyTable<&'static [u8], u64>,
+    key: &[u8],
+) -> Result<bool, StoreError> {
+    match ttl_table
+        .get(key)
+        .map_err(|e| StoreError::Other(e.to_string()))?
+    {
+        Some(guard) => Ok(is_expired(guard.value())),
+        None => Ok(false),
+    }
+}
+
+/// Current wall-clock time in unix-epoch milliseconds (saturating to 0 on a
+/// clock earlier than the epoch).
+fn now_epoch_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Returns `true` if `key`'s TTL entry (in an already-open `TTL_TABLE` read
+/// view) had already elapsed at the given `captured_at` timestamp.
+///
+/// Used by [`RedbSnapshot`] so an immutable point-in-time view excludes keys
+/// that were already expired when the snapshot was taken, while keeping keys
+/// that expire only after capture (matching the sled backend's semantics).
+fn is_ttl_expired_at(
+    ttl_table: &ReadOnlyTable<&'static [u8], u64>,
+    key: &[u8],
+    captured_at: u64,
+) -> Result<bool, StoreError> {
+    match ttl_table
+        .get(key)
+        .map_err(|e| StoreError::Other(e.to_string()))?
+    {
+        Some(guard) => Ok(guard.value() <= captured_at),
+        None => Ok(false),
+    }
+}
 
 /// A [`KvStore`] backed by [redb](https://crates.io/crates/redb).
 ///
@@ -241,6 +290,7 @@ impl RedbStore {
     ///
     /// ```no_run
     /// use oxistore_kv_redb::RedbStore;
+    /// use oxistore_core::KvStore;
     ///
     /// let store = RedbStore::open_in_memory().expect("open");
     /// store.put(b"k", b"v1").expect("initial put");
@@ -283,6 +333,7 @@ impl RedbStore {
     ///
     /// ```no_run
     /// use oxistore_kv_redb::RedbStore;
+    /// use oxistore_core::KvStore;
     ///
     /// let store = RedbStore::open_in_memory().expect("open");
     /// store.put(b"k", b"v").expect("put");
@@ -477,6 +528,15 @@ impl KvStore for RedbStore {
             table
                 .insert(key, value)
                 .map_err(|e| StoreError::Other(e.to_string()))?;
+            // A fresh, TTL-less write must not inherit a stale expiry from a
+            // previous `put_with_ttl`/`expire` call on this key — otherwise
+            // the new value would be silently evicted at the old expiry.
+            let mut ttl_table = txn
+                .open_table(TTL_TABLE)
+                .map_err(|e| StoreError::Other(e.to_string()))?;
+            ttl_table
+                .remove(key)
+                .map_err(|e| StoreError::Other(e.to_string()))?;
         }
         txn.commit().map_err(|e| StoreError::Other(e.to_string()))?;
         Ok(())
@@ -498,6 +558,15 @@ impl KvStore for RedbStore {
             table
                 .remove(key)
                 .map_err(|e| StoreError::Other(e.to_string()))?;
+            // Clear any TTL sidecar entry so `ttl()` cannot report an expiry
+            // for an absent key, and so a future key reuse via `batch_write`
+            // doesn't inherit an orphaned entry.
+            let mut ttl_table = txn
+                .open_table(TTL_TABLE)
+                .map_err(|e| StoreError::Other(e.to_string()))?;
+            ttl_table
+                .remove(key)
+                .map_err(|e| StoreError::Other(e.to_string()))?;
         }
         txn.commit().map_err(|e| StoreError::Other(e.to_string()))?;
         Ok(())
@@ -511,16 +580,23 @@ impl KvStore for RedbStore {
         let table = txn
             .open_table(self.table_def())
             .map_err(|e| StoreError::Other(e.to_string()))?;
+        let ttl_table = txn
+            .open_table(TTL_TABLE)
+            .map_err(|e| StoreError::Other(e.to_string()))?;
         let lo_owned = lo.to_vec();
         let hi_owned = hi.to_vec();
-        let pairs: Vec<oxistore_core::RangeItem> = table
+        let mut pairs: Vec<oxistore_core::RangeItem> = Vec::new();
+        for item in table
             .range(lo_owned.as_slice()..hi_owned.as_slice())
             .map_err(|e| StoreError::Other(e.to_string()))?
-            .map(|item| {
-                item.map(|(k, v)| (k.value().to_vec(), v.value().to_vec()))
-                    .map_err(|e| StoreError::Other(e.to_string()))
-            })
-            .collect();
+        {
+            let (k, v) = item.map_err(|e| StoreError::Other(e.to_string()))?;
+            let key = k.value().to_vec();
+            if is_ttl_expired(&ttl_table, &key)? {
+                continue;
+            }
+            pairs.push(Ok((key, v.value().to_vec())));
+        }
         Ok(Box::new(pairs.into_iter()))
     }
 
@@ -532,37 +608,42 @@ impl KvStore for RedbStore {
         let table = txn
             .open_table(self.table_def())
             .map_err(|e| StoreError::Other(e.to_string()))?;
+        let ttl_table = txn
+            .open_table(TTL_TABLE)
+            .map_err(|e| StoreError::Other(e.to_string()))?;
 
         let prefix_owned = prefix.to_vec();
-        let pairs: Vec<oxistore_core::RangeItem> = match oxistore_core::prefix_upper_bound(prefix) {
-            Some(hi) => table
-                .range(prefix_owned.as_slice()..hi.as_slice())
-                .map_err(|e| StoreError::Other(e.to_string()))?
-                .map(|item| {
-                    item.map(|(k, v)| (k.value().to_vec(), v.value().to_vec()))
-                        .map_err(|e| StoreError::Other(e.to_string()))
-                })
-                .collect(),
+        let mut pairs: Vec<oxistore_core::RangeItem> = Vec::new();
+        match oxistore_core::prefix_upper_bound(prefix) {
+            Some(hi) => {
+                for item in table
+                    .range(prefix_owned.as_slice()..hi.as_slice())
+                    .map_err(|e| StoreError::Other(e.to_string()))?
+                {
+                    let (k, v) = item.map_err(|e| StoreError::Other(e.to_string()))?;
+                    let key = k.value().to_vec();
+                    if is_ttl_expired(&ttl_table, &key)? {
+                        continue;
+                    }
+                    pairs.push(Ok((key, v.value().to_vec())));
+                }
+            }
             None => {
                 // No upper bound — scan everything (or from prefix..).
-                if prefix.is_empty() {
-                    table
-                        .iter()
-                        .map_err(|e| StoreError::Other(e.to_string()))?
-                        .map(|item| {
-                            item.map(|(k, v)| (k.value().to_vec(), v.value().to_vec()))
-                                .map_err(|e| StoreError::Other(e.to_string()))
-                        })
-                        .collect()
+                let iter = if prefix.is_empty() {
+                    table.iter().map_err(|e| StoreError::Other(e.to_string()))?
                 } else {
                     table
                         .range(prefix_owned.as_slice()..)
                         .map_err(|e| StoreError::Other(e.to_string()))?
-                        .map(|item| {
-                            item.map(|(k, v)| (k.value().to_vec(), v.value().to_vec()))
-                                .map_err(|e| StoreError::Other(e.to_string()))
-                        })
-                        .collect()
+                };
+                for item in iter {
+                    let (k, v) = item.map_err(|e| StoreError::Other(e.to_string()))?;
+                    let key = k.value().to_vec();
+                    if is_ttl_expired(&ttl_table, &key)? {
+                        continue;
+                    }
+                    pairs.push(Ok((key, v.value().to_vec())));
                 }
             }
         };
@@ -582,9 +663,17 @@ impl KvStore for RedbStore {
             let mut table = txn
                 .open_table(self.table_def())
                 .map_err(|e| StoreError::Other(e.to_string()))?;
+            // Same stale-TTL-clear as `put` — a batch write is a TTL-less
+            // write for every key it touches.
+            let mut ttl_table = txn
+                .open_table(TTL_TABLE)
+                .map_err(|e| StoreError::Other(e.to_string()))?;
             for &(k, v) in pairs {
                 table
                     .insert(k, v)
+                    .map_err(|e| StoreError::Other(e.to_string()))?;
+                ttl_table
+                    .remove(k)
                     .map_err(|e| StoreError::Other(e.to_string()))?;
             }
         }
@@ -605,8 +694,16 @@ impl KvStore for RedbStore {
             let mut table = txn
                 .open_table(self.table_def())
                 .map_err(|e| StoreError::Other(e.to_string()))?;
+            // Clear TTL sidecar entries so `ttl()` cannot report an expiry
+            // for a now-absent key.
+            let mut ttl_table = txn
+                .open_table(TTL_TABLE)
+                .map_err(|e| StoreError::Other(e.to_string()))?;
             for &k in keys {
                 table
+                    .remove(k)
+                    .map_err(|e| StoreError::Other(e.to_string()))?;
+                ttl_table
                     .remove(k)
                     .map_err(|e| StoreError::Other(e.to_string()))?;
             }
@@ -623,7 +720,21 @@ impl KvStore for RedbStore {
         let table = txn
             .open_table(self.table_def())
             .map_err(|e| StoreError::Other(e.to_string()))?;
-        table.len().map_err(|e| StoreError::Other(e.to_string()))
+        let ttl_table = txn
+            .open_table(TTL_TABLE)
+            .map_err(|e| StoreError::Other(e.to_string()))?;
+        // `Table::len` counts raw entries, including those with an
+        // expired-but-not-yet-evicted TTL, so it must not be used directly:
+        // filter each key against the TTL table to match `get`'s visibility.
+        let mut count = 0u64;
+        for item in table.iter().map_err(|e| StoreError::Other(e.to_string()))? {
+            let (k, _v) = item.map_err(|e| StoreError::Other(e.to_string()))?;
+            if is_ttl_expired(&ttl_table, k.value())? {
+                continue;
+            }
+            count += 1;
+        }
+        Ok(count)
     }
 
     fn size_on_disk(&self) -> Result<u64, StoreError> {
@@ -644,14 +755,18 @@ impl KvStore for RedbStore {
         let table = txn
             .open_table(self.table_def())
             .map_err(|e| StoreError::Other(e.to_string()))?;
-        let pairs: Vec<oxistore_core::RangeItem> = table
-            .iter()
-            .map_err(|e| StoreError::Other(e.to_string()))?
-            .map(|item| {
-                item.map(|(k, v)| (k.value().to_vec(), v.value().to_vec()))
-                    .map_err(|e| StoreError::Other(e.to_string()))
-            })
-            .collect();
+        let ttl_table = txn
+            .open_table(TTL_TABLE)
+            .map_err(|e| StoreError::Other(e.to_string()))?;
+        let mut pairs: Vec<oxistore_core::RangeItem> = Vec::new();
+        for item in table.iter().map_err(|e| StoreError::Other(e.to_string()))? {
+            let (k, v) = item.map_err(|e| StoreError::Other(e.to_string()))?;
+            let key = k.value().to_vec();
+            if is_ttl_expired(&ttl_table, &key)? {
+                continue;
+            }
+            pairs.push(Ok((key, v.value().to_vec())));
+        }
         Ok(Box::new(pairs.into_iter()))
     }
 
@@ -663,14 +778,28 @@ impl KvStore for RedbStore {
         let table = txn
             .open_table(self.table_def())
             .map_err(|e| StoreError::Other(e.to_string()))?;
-        let keys: Vec<Result<Vec<u8>, StoreError>> = table
-            .iter()
-            .map_err(|e| StoreError::Other(e.to_string()))?
-            .map(|item| {
-                item.map(|(k, _v)| k.value().to_vec())
-                    .map_err(|e| StoreError::Other(e.to_string()))
-            })
-            .collect();
+        let ttl_table = txn
+            .open_table(TTL_TABLE)
+            .map_err(|e| StoreError::Other(e.to_string()))?;
+        let mut keys: Vec<Result<Vec<u8>, StoreError>> = Vec::new();
+        match table.iter().map_err(|e| StoreError::Other(e.to_string())) {
+            Ok(it) => {
+                for item in it {
+                    match item {
+                        Ok((k, _v)) => {
+                            let key = k.value().to_vec();
+                            match is_ttl_expired(&ttl_table, &key) {
+                                Ok(true) => continue,
+                                Ok(false) => keys.push(Ok(key)),
+                                Err(e) => keys.push(Err(e)),
+                            }
+                        }
+                        Err(e) => keys.push(Err(StoreError::Other(e.to_string()))),
+                    }
+                }
+            }
+            Err(e) => keys.push(Err(e)),
+        }
         Ok(Box::new(keys.into_iter()))
     }
 
@@ -761,6 +890,7 @@ impl KvStore for RedbStore {
         Ok(Box::new(RedbSnapshot {
             txn,
             table_def: self.table_def(),
+            captured_at_millis: now_epoch_millis(),
         }))
     }
 
@@ -1045,6 +1175,26 @@ impl RedbTxn {
     fn table_def(&self) -> TableDefinition<'static, &'static [u8], &'static [u8]> {
         TableDefinition::new(self.table_name)
     }
+
+    /// Whether a committed key's TTL has already elapsed as of now.
+    ///
+    /// A transaction is a *live* view, so TTL is evaluated at read time,
+    /// consistent with `RedbStore::get`.  Reads never mutate, so an expired key
+    /// is merely hidden here; eviction happens on the next store-level access.
+    fn committed_key_expired(&self, key: &[u8]) -> Result<bool, StoreError> {
+        let txn = self
+            .inner
+            .as_ref()
+            .ok_or_else(|| StoreError::Other("transaction already consumed".to_string()))?;
+        let ttl_table = txn
+            .open_table(TTL_TABLE)
+            .map_err(|e| StoreError::Other(e.to_string()))?;
+        let expiry = ttl_table
+            .get(key)
+            .map_err(|e| StoreError::Other(e.to_string()))?
+            .map(|guard| guard.value());
+        Ok(expiry.map(is_expired).unwrap_or(false))
+    }
 }
 
 impl KvTxn for RedbTxn {
@@ -1056,7 +1206,10 @@ impl KvTxn for RedbTxn {
                 TxnOp::Delete => Ok(None),
             };
         }
-        // Fall through to committed state.
+        // Fall through to committed state, honoring TTL.
+        if self.committed_key_expired(key)? {
+            return Ok(None);
+        }
         let txn = self
             .inner
             .as_ref()
@@ -1082,6 +1235,16 @@ impl KvTxn for RedbTxn {
         table
             .insert(key, value)
             .map_err(|e| StoreError::Other(e.to_string()))?;
+        // Clear any stale TTL sidecar entry in the same write transaction so
+        // it commits atomically with the data write (mirrors `RedbStore::put`)
+        // — a TTL-less write through a transaction must not inherit a stale
+        // expiry from an earlier `put_with_ttl`/`expire` call on this key.
+        let mut ttl_table = txn
+            .open_table(TTL_TABLE)
+            .map_err(|e| StoreError::Other(e.to_string()))?;
+        ttl_table
+            .remove(key)
+            .map_err(|e| StoreError::Other(e.to_string()))?;
         // Also record in overlay for read-your-writes.
         self.overlay
             .insert(key.to_vec(), TxnOp::Put(value.to_vec()));
@@ -1097,6 +1260,14 @@ impl KvTxn for RedbTxn {
             .open_table(self.table_def())
             .map_err(|e| StoreError::Other(e.to_string()))?;
         table
+            .remove(key)
+            .map_err(|e| StoreError::Other(e.to_string()))?;
+        // Clear the TTL sidecar entry too, so `ttl()` cannot report an
+        // expiry for a key this transaction deleted.
+        let mut ttl_table = txn
+            .open_table(TTL_TABLE)
+            .map_err(|e| StoreError::Other(e.to_string()))?;
+        ttl_table
             .remove(key)
             .map_err(|e| StoreError::Other(e.to_string()))?;
         self.overlay.insert(key.to_vec(), TxnOp::Delete);
@@ -1119,14 +1290,29 @@ impl KvTxn for RedbTxn {
         let lo_owned = lo.to_vec();
         let hi_owned = hi.to_vec();
 
-        // Collect committed data into a BTreeMap for merging.
+        // Collect committed data into a BTreeMap for merging, skipping any
+        // committed key whose TTL has already elapsed (consistent with `get`).
+        let ttl_table = txn
+            .open_table(TTL_TABLE)
+            .map_err(|e| StoreError::Other(e.to_string()))?;
         let mut merged: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
         for item in table
             .range(lo_owned.as_slice()..hi_owned.as_slice())
             .map_err(|e| StoreError::Other(e.to_string()))?
         {
             let (k, v) = item.map_err(|e| StoreError::Other(e.to_string()))?;
-            merged.insert(k.value().to_vec(), v.value().to_vec());
+            let key = k.value().to_vec();
+            let expired = match ttl_table
+                .get(key.as_slice())
+                .map_err(|e| StoreError::Other(e.to_string()))?
+            {
+                Some(guard) => is_expired(guard.value()),
+                None => false,
+            };
+            if expired {
+                continue;
+            }
+            merged.insert(key, v.value().to_vec());
         }
 
         // Apply overlay.
@@ -1177,10 +1363,20 @@ impl KvTxn for RedbTxn {
 pub struct RedbSnapshot {
     txn: ReadTransaction,
     table_def: TableDefinition<'static, &'static [u8], &'static [u8]>,
+    /// Wall-clock capture time (epoch millis).  Keys whose TTL had elapsed by
+    /// this instant are excluded, keeping the view TTL-consistent with `get`.
+    captured_at_millis: u64,
 }
 
 impl KvSnapshot for RedbSnapshot {
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+        let ttl_table = self
+            .txn
+            .open_table(TTL_TABLE)
+            .map_err(|e| StoreError::Other(e.to_string()))?;
+        if is_ttl_expired_at(&ttl_table, key, self.captured_at_millis)? {
+            return Ok(None);
+        }
         let table = self
             .txn
             .open_table(self.table_def)
@@ -1193,20 +1389,28 @@ impl KvSnapshot for RedbSnapshot {
 
     fn range<'a>(&'a self, lo: &[u8], hi: &[u8]) -> Result<RangeIter<'a>, StoreError> {
         // Materialize into Vec to avoid self-referential struct lifetime issues.
+        let ttl_table = self
+            .txn
+            .open_table(TTL_TABLE)
+            .map_err(|e| StoreError::Other(e.to_string()))?;
         let table = self
             .txn
             .open_table(self.table_def)
             .map_err(|e| StoreError::Other(e.to_string()))?;
         let lo_owned = lo.to_vec();
         let hi_owned = hi.to_vec();
-        let pairs: Vec<oxistore_core::RangeItem> = table
+        let mut pairs: Vec<oxistore_core::RangeItem> = Vec::new();
+        for item in table
             .range(lo_owned.as_slice()..hi_owned.as_slice())
             .map_err(|e| StoreError::Other(e.to_string()))?
-            .map(|item| {
-                item.map(|(k, v)| (k.value().to_vec(), v.value().to_vec()))
-                    .map_err(|e| StoreError::Other(e.to_string()))
-            })
-            .collect();
+        {
+            let (k, v) = item.map_err(|e| StoreError::Other(e.to_string()))?;
+            let key = k.value().to_vec();
+            if is_ttl_expired_at(&ttl_table, &key, self.captured_at_millis)? {
+                continue;
+            }
+            pairs.push(Ok((key, v.value().to_vec())));
+        }
         Ok(Box::new(pairs.into_iter()))
     }
 }

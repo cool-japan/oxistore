@@ -9,7 +9,10 @@
 //! the aws-sigv4 API surface.
 
 use aws_credential_types::Credentials;
-use aws_sigv4::http_request::{sign, SignableBody, SignableRequest, SigningSettings};
+use aws_sigv4::http_request::{
+    sign, PayloadChecksumKind, PercentEncodingMode, SignableBody, SignableRequest, SigningSettings,
+    UriPathNormalizationMode,
+};
 use aws_sigv4::sign::v4;
 use oxistore_blob::BlobError;
 use std::time::SystemTime;
@@ -50,7 +53,27 @@ pub fn sign_request(
 
     let identity = creds.into();
 
-    let signing_settings = SigningSettings::default();
+    // `SigningSettings::default()` is documented-wrong for S3:
+    // - `percent_encoding_mode` defaults to `Double`, which re-encodes `%` in
+    //   the canonical path. `object_url()` (and `copy()`'s copy-source, and
+    //   the list prefix/continuation-token) already single-encode the key via
+    //   `percent_encode`, so double-encoding here would sign a canonical path
+    //   that does not match the literal wire path for any key containing a
+    //   space, unicode, or other reserved character -> SignatureDoesNotMatch.
+    // - `payload_checksum_kind` defaults to `NoHeader`, so
+    //   `x-amz-content-sha256` is never sent; real AWS S3 requires this
+    //   header and rejects requests without it (MinIO / the in-process mock
+    //   tolerate its absence, which is why this was invisible to tests).
+    // - `uri_path_normalization_mode` defaults to `Enabled`, which collapses
+    //   `//` and `/./` in the canonical path only; S3 explicitly rejects
+    //   normalized paths in some cases and keys may legitimately contain
+    //   these sequences.
+    // `SigningSettings` is `#[non_exhaustive]`, so fields are set individually
+    // rather than via struct-update syntax.
+    let mut signing_settings = SigningSettings::default();
+    signing_settings.percent_encoding_mode = PercentEncodingMode::Single;
+    signing_settings.payload_checksum_kind = PayloadChecksumKind::XAmzSha256;
+    signing_settings.uri_path_normalization_mode = UriPathNormalizationMode::Disabled;
 
     let signing_params: aws_sigv4::http_request::SigningParams = v4::SigningParams::builder()
         .identity(&identity)

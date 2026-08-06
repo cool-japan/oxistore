@@ -123,9 +123,14 @@ impl S3BlobStore {
     /// Return the endpoint URL for the given object key.
     ///
     /// Supports both path-style and virtual-host-style URLs.
+    ///
+    /// The key is percent-encoded per path segment (preserving `/` as the
+    /// segment separator) so that keys containing spaces, unicode, or other
+    /// reserved characters produce a well-formed URL that matches the path
+    /// used to build the SigV4 canonical request.
     pub(crate) fn object_url(&self, key: &str) -> Result<String, BlobError> {
         let base = self.bucket_url()?;
-        Ok(format!("{base}/{key}"))
+        Ok(format!("{base}/{}", percent_encode(key)))
     }
 
     /// Extract host:port from a URL string.
@@ -289,7 +294,7 @@ impl S3BlobStore {
     ///
     /// No data is transferred through the client — S3 copies server-side.
     pub async fn copy(&self, src: &str, dst: &str) -> Result<(), BlobError> {
-        let copy_source = format!("/{}/{src}", self.config.bucket);
+        let copy_source = format!("/{}/{}", self.config.bucket, percent_encode(src));
         let dst_url = self.object_url(dst)?;
         let extra = [("x-amz-copy-source", copy_source.as_str())];
         let resp = self.send("PUT", &dst_url, &[], &extra).await?;
@@ -503,7 +508,9 @@ fn parse_list_objects_v2_page(xml: &[u8]) -> Result<ListPage, BlobError> {
     })
 }
 
-/// Percent-encode a string for use as a URL query parameter value.
+/// Percent-encode a string for use as a URL query parameter value or as a
+/// URL path (object key). `/` is left unescaped so callers can use this to
+/// encode a full object key while preserving its path-segment structure.
 pub(crate) fn percent_encode(s: &str) -> String {
     s.bytes()
         .flat_map(|b| match b {

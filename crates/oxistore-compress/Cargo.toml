@@ -32,3 +32,7 @@ name = "compress_ops"
 harness = false
 required-features = ["compress"]
 
+[[example]]
+name = "oxiarc_roundtrip"
+required-features = ["compress"]
+

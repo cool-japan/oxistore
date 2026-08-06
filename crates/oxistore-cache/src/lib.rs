@@ -83,10 +83,6 @@ pub mod blob_cache;
 #[cfg(feature = "columnar")]
 pub mod columnar_cache;
 
-/// SQL query-result and prepared-plan caches backed by `oxisql-core` types.
-#[cfg(feature = "sql")]
-pub mod sql_cache;
-
 pub use arc::ArcCache;
 pub use bounded::BoundedCache;
 pub use builder::{CacheBuilder, CachePolicy};
@@ -103,9 +99,6 @@ pub use blob_cache::BlobCache;
 
 #[cfg(feature = "columnar")]
 pub use columnar_cache::ColumnarRowGroupCache;
-
-#[cfg(feature = "sql")]
-pub use sql_cache::{CachedQueryRunner, SqlPlanCache, SqlQueryCache};
 
 /// A cache entry that optionally expires at a given instant.
 ///

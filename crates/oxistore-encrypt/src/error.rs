@@ -13,7 +13,14 @@ pub enum EncryptError {
         got: usize,
     },
 
-    /// The OS keyring is unavailable (stub — M6).
+    /// The OS keyring could not retrieve the requested key.
+    ///
+    /// This is returned when the `os-keyring` feature is disabled (no keyring
+    /// backend is compiled in), when no [`CredentialStore`] has been registered
+    /// via `keyring_core::set_default_store`, or when the registered store has
+    /// no entry for the requested label.
+    ///
+    /// [`CredentialStore`]: https://docs.rs/keyring-core
     ///
     /// `label` is the keyring entry label that was requested.
     KeyringUnavailable {
@@ -63,6 +70,11 @@ pub enum EncryptError {
         /// Reason for the failure.
         reason: String,
     },
+
+    /// An external key provider (e.g. a PKCS#11 HSM bridge) failed to supply a key.
+    ///
+    /// The wrapped string describes the underlying provider error.
+    KeyProviderFailed(String),
 }
 
 impl core::fmt::Display for EncryptError {
@@ -72,7 +84,7 @@ impl core::fmt::Display for EncryptError {
                 write!(f, "invalid key length: expected 32 bytes, got {got}")
             }
             EncryptError::KeyringUnavailable { label } => {
-                write!(f, "OS keyring unavailable for label '{label}' (M6 stub)")
+                write!(f, "OS keyring unavailable for label '{label}'")
             }
             EncryptError::CiphertextTooShort { min_expected, got } => write!(
                 f,
@@ -110,6 +122,9 @@ impl core::fmt::Display for EncryptError {
                     f,
                     "key rotation from version {old_version} to {new_version} failed: {reason}"
                 )
+            }
+            EncryptError::KeyProviderFailed(msg) => {
+                write!(f, "external key provider failed: {msg}")
             }
         }
     }

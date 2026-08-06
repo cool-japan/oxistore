@@ -27,8 +27,8 @@
 
 use bytes::Bytes;
 use oxistore_blob::BlobError;
-use quick_xml::events::Event;
-use quick_xml::Reader;
+use quick_xml::events::{BytesText, Event};
+use quick_xml::{Reader, Writer};
 
 use crate::S3BlobStore;
 
@@ -119,7 +119,7 @@ impl<'a> S3MultipartUpload<'a> {
         // Sort parts in ascending part-number order (AWS requirement)
         self.parts.sort_by_key(|(n, _)| *n);
 
-        let xml = build_complete_xml(&self.parts);
+        let xml = build_complete_xml(&self.parts)?;
 
         // POST /<key>?uploadId=<id>
         let url = format!(
@@ -213,15 +213,35 @@ fn parse_upload_id(xml: &[u8]) -> Result<String, BlobError> {
 /// Build the `CompleteMultipartUpload` XML body.
 ///
 /// Parts are assumed to already be sorted by number (caller responsibility).
-fn build_complete_xml(parts: &[(u32, String)]) -> String {
-    let mut xml = String::from("<CompleteMultipartUpload>");
-    for (num, etag) in parts {
-        xml.push_str(&format!(
-            "<Part><PartNumber>{num}</PartNumber><ETag>{etag}</ETag></Part>"
-        ));
-    }
-    xml.push_str("</CompleteMultipartUpload>");
-    xml
+///
+/// Built via [`quick_xml::Writer`] so `PartNumber`/`ETag` text content is
+/// properly XML-escaped.  Previously this hand-built the body via string
+/// concatenation with no escaping: a server-supplied ETag containing `&` or
+/// `<` would produce a malformed request body that S3 rejects (or worse,
+/// silently truncates/misparses).
+fn build_complete_xml(parts: &[(u32, String)]) -> Result<String, BlobError> {
+    let mut writer = Writer::new(Vec::new());
+    writer
+        .create_element("CompleteMultipartUpload")
+        .write_inner_content(|w| {
+            for (num, etag) in parts {
+                w.create_element("Part").write_inner_content(|w2| {
+                    w2.create_element("PartNumber")
+                        .write_text_content(BytesText::new(&num.to_string()))?;
+                    w2.create_element("ETag")
+                        .write_text_content(BytesText::new(etag))?;
+                    Ok(())
+                })?;
+            }
+            Ok(())
+        })
+        .map_err(|e| {
+            BlobError::MultipartError(format!("build CompleteMultipartUpload XML: {e}"))
+        })?;
+
+    String::from_utf8(writer.into_inner()).map_err(|e| {
+        BlobError::MultipartError(format!("CompleteMultipartUpload XML not UTF-8: {e}"))
+    })
 }
 
 #[cfg(test)]
@@ -235,14 +255,51 @@ mod tests {
             (2u32, "\"etag2\"".to_string()),
             (3u32, "\"etag3\"".to_string()),
         ];
-        let xml = build_complete_xml(&parts);
+        let xml = build_complete_xml(&parts).expect("build complete xml");
         assert!(xml.contains("<PartNumber>1</PartNumber>"));
-        assert!(xml.contains("<ETag>\"etag1\"</ETag>"));
+        // The literal double-quotes AWS wraps ETags in are XML-escaped by the
+        // `Writer`-based builder (`"` -> `&quot;`), unlike the old hand-built
+        // string-concat version which emitted them verbatim.
+        assert!(
+            xml.contains("<ETag>&quot;etag1&quot;</ETag>"),
+            "ETag quotes must be XML-escaped: {xml}"
+        );
         // Verify order
         let pos1 = xml.find("<PartNumber>1</PartNumber>").expect("part 1");
         let pos2 = xml.find("<PartNumber>2</PartNumber>").expect("part 2");
         let pos3 = xml.find("<PartNumber>3</PartNumber>").expect("part 3");
         assert!(pos1 < pos2 && pos2 < pos3, "parts must be in order");
+    }
+
+    /// Regression test for the correctness fix: a server-supplied ETag
+    /// containing `&`, `<`, or `>` must not corrupt the XML body.  Before the
+    /// `Writer`-based rewrite this was hand-built via string concatenation
+    /// with no escaping, producing malformed XML for such an ETag.
+    #[test]
+    fn complete_xml_escapes_special_characters_in_etag() {
+        let parts = vec![(1u32, "\"a&b<c>d\"".to_string())];
+        let xml = build_complete_xml(&parts).expect("build complete xml");
+        assert!(
+            xml.contains("<ETag>&quot;a&amp;b&lt;c&gt;d&quot;</ETag>"),
+            "special characters must be escaped: {xml}"
+        );
+        // The raw, unescaped characters must not appear inside the ETag
+        // element (they would corrupt the XML document structure).
+        assert!(!xml.contains("<ETag>\"a&b<c>d\"</ETag>"));
+
+        // Round-trip: the produced document must itself be well-formed XML
+        // that a reader can parse back into events without error.
+        let mut reader = Reader::from_str(&xml);
+        reader.config_mut().trim_text(true);
+        let mut buf = Vec::new();
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Eof) => break,
+                Ok(_) => {}
+                Err(e) => panic!("generated XML must be well-formed, got parse error: {e}"),
+            }
+            buf.clear();
+        }
     }
 
     #[test]

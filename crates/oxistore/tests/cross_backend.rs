@@ -10,9 +10,18 @@ use oxistore::open;
 #[cfg(any(feature = "kv-sled", feature = "kv-fjall"))]
 use oxistore::{open_with, StoreKind};
 
+/// Monotonic counter so concurrently-launched tests never collide on the
+/// same temp directory even when the system clock's observed resolution is
+/// coarser than the rate at which test threads call `unique_temp_dir`
+/// (`subsec_nanos()` alone was not a sufficient uniqueness guarantee under
+/// heavy parallel load: multiple `redb`-backed tests race to `open()` the
+/// "same" path and one gets `Corruption("Database already open...")`).
+static UNIQUE_DIR_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 fn unique_temp_dir(label: &str) -> std::path::PathBuf {
+    let n = UNIQUE_DIR_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     std::env::temp_dir().join(format!(
-        "oxistore_cross_{}_{}_{:?}",
+        "oxistore_cross_{}_{}_{:?}_{n}",
         label,
         std::process::id(),
         std::time::SystemTime::now()
@@ -181,8 +190,12 @@ macro_rules! backend_test_suite {
             fn ttl_expiry() {
                 use std::time::Duration;
                 let store = make_store();
+                // 300ms (rather than 100ms) so the "get before expiry"
+                // assertion immediately below doesn't race the TTL under a
+                // loaded, highly-parallel test run — this file instantiates
+                // the same test body for all three backends concurrently.
                 store
-                    .put_with_ttl(b"ttl_key", b"val", Duration::from_millis(100))
+                    .put_with_ttl(b"ttl_key", b"val", Duration::from_millis(300))
                     .expect("put_with_ttl");
                 assert_eq!(
                     store.get(b"ttl_key").expect("get before expiry"),
@@ -190,12 +203,69 @@ macro_rules! backend_test_suite {
                 );
                 // Sleep well beyond the TTL to account for coarse system clocks
                 // and high-load CI/test environments.
-                std::thread::sleep(Duration::from_millis(500));
+                std::thread::sleep(Duration::from_millis(900));
                 // After expiry, lazy eviction should return None.
                 assert_eq!(
                     store.get(b"ttl_key").expect("get after expiry"),
                     None,
                     "key should have expired"
+                );
+            }
+
+            /// A TTL-less overwrite through `batch_write`, a committed
+            /// transaction `put`, or `compare_and_swap` must clear a stale
+            /// TTL sidecar entry left by an earlier `put_with_ttl` — exactly
+            /// like plain `put` already does. Before this fix, only `put`
+            /// cleared the sidecar entry, so the fresh value written by any
+            /// of these other paths was silently evicted at the *old*
+            /// expiry. Runs identically against all three backends via the
+            /// `backend_test_suite!` macro.
+            #[test]
+            fn ttl_stale_expiry_cleared_by_batch_write_txn_and_cas() {
+                use std::time::Duration;
+                let store = make_store();
+
+                // -- batch_write --
+                store
+                    .put_with_ttl(b"stale_batch", b"old", Duration::from_millis(80))
+                    .expect("put_with_ttl batch");
+                let pairs: [(&[u8], &[u8]); 1] = [(b"stale_batch", b"new")];
+                store.batch_write(&pairs).expect("batch_write");
+
+                // -- transaction put + commit --
+                store
+                    .put_with_ttl(b"stale_txn", b"old", Duration::from_millis(80))
+                    .expect("put_with_ttl txn");
+                let mut txn = store.transaction().expect("open txn");
+                txn.put(b"stale_txn", b"new").expect("txn put");
+                txn.commit().expect("txn commit");
+
+                // -- compare_and_swap --
+                store
+                    .put_with_ttl(b"stale_cas", b"old", Duration::from_millis(80))
+                    .expect("put_with_ttl cas");
+                let swapped = store
+                    .compare_and_swap(b"stale_cas", Some(b"old"), b"new")
+                    .expect("compare_and_swap");
+                assert!(swapped, "CAS with matching expected value must succeed");
+
+                // Sleep well past the *original* TTL on all three keys.
+                std::thread::sleep(Duration::from_millis(400));
+
+                assert_eq!(
+                    store.get(b"stale_batch").expect("get stale_batch"),
+                    Some(b"new".to_vec()),
+                    "batch_write must clear the stale TTL from a prior put_with_ttl"
+                );
+                assert_eq!(
+                    store.get(b"stale_txn").expect("get stale_txn"),
+                    Some(b"new".to_vec()),
+                    "transaction commit must clear the stale TTL from a prior put_with_ttl"
+                );
+                assert_eq!(
+                    store.get(b"stale_cas").expect("get stale_cas"),
+                    Some(b"new".to_vec()),
+                    "compare_and_swap must clear the stale TTL from a prior put_with_ttl"
                 );
             }
 

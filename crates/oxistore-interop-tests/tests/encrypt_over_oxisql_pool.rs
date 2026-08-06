@@ -1,6 +1,9 @@
 //! Integration tests: `EncryptedPooledStore` — cell-level AEAD encryption
 //! layered over an `oxisql_pool::OxidbKvStore` (embedded/in-memory backend).
 //!
+//! Lives in `oxistore-interop-tests` (not `oxistore-encrypt`) so that the
+//! publishable `oxistore-encrypt` crate carries no `oxisql` dependency edge.
+//!
 //! ## Design
 //!
 //! `OxidbKvStore` is an async SQL-backed KV store using `&str` keys and

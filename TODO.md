@@ -1,6 +1,6 @@
 # OxiStore TODO
 
-**v0.2.0 — 2026-06-23** (1030 tests, 4 skipped, all M0–M5 complete)
+**v0.3.0 — 2026-08-07** | **v0.2.0 released 2026-06-23** (1030 tests, 4 skipped, all M0–M5 complete)
 
 Milestones derived from `../phase3/oxistore_blueprint.md` section Phased milestones.
 
@@ -34,7 +34,7 @@ oxistore (facade)
 ## Dependency inversion (2026-06-05)
 
 - [x] Received the aws-lc AEAD bridge from oxicrypto as the new `oxicrypto-aws-lc` feature: `AwsLcOxistoreAead` promoted to real library code (`crates/oxistore-encrypt/src/bridge_aws_lc.rs`) + moved integration test `tests/oxicrypto_aws_lc_compat.rs` (118 passing). (done 2026-06-05)
-- [ ] FOLLOW-UP (next cycle, after `oxicrypto-adapter-pkcs11` 0.1.2 publishes): add an `oxicrypto-pkcs11` feature to oxistore-encrypt re-homing `Pkcs11KeyProvider` / `Pkcs11ExtractableKeyProvider` as `oxistore_encrypt::KeyProvider` impls. Blocked on the 0.1.1 public API lacking the needed pkcs11 methods; adapter-pkcs11 0.1.2 now exposes them (`find_secret_key`/`with_session`/`generate_hmac_key`/`extract_key_value` pub). Must NOT use a cross-workspace path dep (that reintroduces the upward coupling just removed) — wait for the crates.io 0.1.2 release.
+- [x] Add an `oxicrypto-pkcs11` feature to oxistore-encrypt re-homing a PKCS#11 HSM-backed `KeyProvider` bridge (`Pkcs11KeyProvider`, `crates/oxistore-encrypt/src/pkcs11.rs`). Consumes `oxicrypto-adapter-pkcs11` from crates.io (not a path dep, so no upward coupling is reintroduced) behind an off-by-default feature — the default build stays 100% Pure Rust. Extractable keys only (see the module doc for the honest limitation on non-extractable HSM keys). (done)
 
 ## Cross-Cutting Priorities
 
@@ -138,3 +138,32 @@ See individual TODO.md files in each crate directory:
    integration). Cell-level is simpler and Pure; page-level is faster but
    couples to backend internals. Default plan: cell-level at M5, revisit
    page-level post-1.0.
+
+
+---
+
+<!-- production-readiness-backlog 2026-07-16 -->
+## Production-Readiness Backlog — 2026-07-16
+
+_Consolidated from static audit + Opus adversarial bug-hunt (48 verified defects across noffi) + baseline nextest/clippy + design investigation. See `../NOFFI_PRODUCTION_BACKLOG.md` for the full cross-project list and severity/model legend._
+
+_Status as of the 2026-08-03 production-hygiene pass: all items below are implemented (see `CHANGELOG.md` `[0.3.0]` for the full description of each fix). Checkboxes updated in place rather than rewriting the original descriptions, to preserve the audit trail._
+
+**Confirmed bugs — Opus-verified:**
+- [x] **S · high** `oxistore-blob-s3/src/lib.rs:128` — object keys interpolated raw into URL path + x-amz-copy-source with no per-segment percent-encoding → malformed URL / path differs from SigV4-signed → request failures/mismatch. R2/N0 (done — `percent_encode` added to `object_url`/`copy`/list/multipart; see CHANGELOG `[0.3.0]` Fixed)
+- [x] **A · med** `oxistore-kv-sled/src/lib.rs:366` (+ redb `:506`) — range/prefix_scan/iter/count ignore TTL expiry while get() honors it → expired keys visible via scans → inconsistent views. R2/N0 (done for redb/sled; `oxistore-kv-fjall` brought to parity in the 2026-08-03 pass — see CHANGELOG `[0.3.0]` Changed)
+- [x] **A · med** `oxistore-kv-redb/src/lib.rs:464` (+ sled `:352`) — put() over a key that had TTL doesn't clear stale TTL_TABLE entry → fresh value silently evicted at old expiry. R1/N1 (review). (done for `put()`; `batch_write`/transaction-commit/`compare_and_swap` on all three backends — redb, sled, fjall — closed in the 2026-08-03 pass, see CHANGELOG `[0.3.0]` Changed)
+**Designed / audit:**
+- [x] **A/med · T1** finish/verify os-keyring KeyringKey (M6 stub). (done — shipped in `[0.1.1]`, re-verified still correct)
+- [x] **A/med/Opus · T2** EncryptedKvEnvelope tx/snapshot support. (done — `EnvelopeTxn`/`EnvelopeSnapshot`, see CHANGELOG `[0.3.0]` Added)
+- [x] **A/med · T3** pkcs11 KeyProvider bridge (likely unblocked — oxicrypto 0.2.x published; verify). (done — `Pkcs11KeyProvider` behind the opt-in `oxicrypto-pkcs11` feature, see CHANGELOG `[0.3.0]` Added)
+- [x] **B/easy · T4** sled snapshot BTreeMap-materialization improvement; examples. (snapshot half: documented as blocked on sled 0.34 having no MVCC/fork API, see `crates/oxistore-kv-sled/src/lib.rs` doc comment on `snapshot`; examples half: `examples/` added to all 12 previously-example-less member crates in the 2026-08-03 pass)
+
+### 2026-08-03 hygiene-wave findings (severity B — see `CHANGELOG.md` `[0.3.0]` for detail)
+
+- [x] `oxistore-blob-azure` object keys percent-encoded in `blob_url` and list `prefix`/`marker` (same defect class as the S3 item above, found and fixed in the same pass).
+- [x] `rustfmt.toml` / `clippy.toml` added at the workspace root.
+- [x] `oxisql-embedded` / `oxisql-pool` / `oxisql-core-02` dev-dependency version pins hoisted to `[workspace.dependencies]`. (**2026-08-04 update**: superseded by the `oxistore` → `oxisql` cycle-break pass — all `oxisql-*` dev-deps moved out of the five publishable crates and into the new `publish = false` `oxistore-interop-tests` member; the `oxisql-core-02` alias no longer exists, see `CHANGELOG.md` `[0.3.0]` Changed/Removed.)
+- [x] Docs-truth pass: this file, `README.md`, and `CHANGELOG.md` brought back in sync with the actual working tree (this edit).
+- [x] Fuzz targets added: `crates/oxistore-encrypt/fuzz` (`envelope_decrypt` — `EnvelopeCipher::decrypt`, the `MIN_ENVELOPE_LEN`-boundary wire-format parser; `cell_decrypt` — `decrypt_cell`, the cell-level wire format), `crates/oxistore-blob-s3/fuzz` (`s3_error_xml` — `S3ErrorResponse::parse`, the S3 XML error-body parser), and `crates/oxistore-blob-azure/fuzz` (`azure_list_response_xml` — `parse_list_response`, the Azure `ListBlobs` XML response parser; widened from a private `fn` to `pub fn` in `oxistore-blob-azure/src/lib.rs` solely so the fuzz target can reach it — no behavior change, verified by the crate's existing 19-test suite, including `azure_list_pagination_yields_all_keys`, still passing unchanged). Each is a detached mini-workspace (own `[workspace]` stanza in `fuzz/Cargo.toml`, confirmed via `cargo metadata` that none of the four appear as root-workspace members) with a checked-in `seeds/<target>/` directory of real, well-formed inputs, separate from cargo-fuzz's own gitignored `corpus/<target>/`. All four built and were run for real (`cargo +nightly fuzz run <target> fuzz/corpus/<target> fuzz/seeds/<target> -- -max_total_time=15`; ASan + libFuzzer, nightly toolchain available in this environment) — zero crashes across roughly 3M total executions (`envelope_decrypt` ~86k-998k execs across runs, `cell_decrypt` ~548k-1.77M execs, `s3_error_xml` ~78k-111k execs, `azure_list_response_xml` ~18k execs).
+- **Deferred, out of B/easy scope**: `deny.toml` has no `[advisories]` section. Adding one surfaces real, pre-existing RUSTSEC findings in transitive dependencies unrelated to this pass (a Marvin-attack timing side-channel in an RSA dependency, `fjall`/`lsm-tree`/`spin` yanked-crate warnings, a handful of `unmaintained` advisories) that need a dedicated security-triage wave to evaluate and fix or `ignore`-list with justification, not a config addition that would silently start failing `cargo deny check` with issues nobody has looked at yet.

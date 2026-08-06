@@ -1,0 +1,30 @@
+# rustfmt.toml — pinned formatting configuration for the OxiStore workspace.
+#
+# This mirrors rustfmt's stable-channel defaults (verified against the
+# existing, hand-formatted codebase: `cargo fmt --check` with *no* config
+# file at all produces only 3 trivial line-wrap diffs across ~50k lines).
+# The file exists so the house style is pinned explicitly rather than left
+# to "whatever the default happens to be on this rustfmt version", not to
+# change how anything is formatted.
+#
+# Only stable (non-nightly-gated) keys are set here — `cargo fmt` on the
+# stable toolchain silently ignores (with a warning) any unstable key such
+# as `imports_granularity`, `group_imports`, or `wrap_comments`, so none of
+# those are listed.
+
+# Matches `[workspace.package].edition` in Cargo.toml. `cargo fmt` already
+# infers this per-crate from each Cargo.toml, but pin it here too so a
+# direct `rustfmt` invocation (outside `cargo fmt`) uses the same rules.
+edition = "2021"
+
+# Restated stable defaults below — no behavior change, just pinned.
+max_width = 100
+hard_tabs = false
+tab_spaces = 4
+newline_style = "Unix"
+use_small_heuristics = "Default"
+reorder_imports = true
+reorder_modules = true
+merge_derives = true
+use_field_init_shorthand = false
+use_try_shorthand = false

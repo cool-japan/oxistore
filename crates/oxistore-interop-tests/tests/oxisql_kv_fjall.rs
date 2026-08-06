@@ -1,8 +1,10 @@
 //! Integration tests verifying that the fjall backend in `oxisql-embedded`
 //! (`FjallEmbeddedConnection` / `FjallGlueStorage`) correctly persists SQL
-//! data to disk and that it is interoperable with `oxistore-kv-fjall`.
+//! data to disk. Lives in `oxistore-interop-tests` (not `oxistore-kv-fjall`)
+//! so that the publishable `oxistore-kv-fjall` crate carries no `oxisql`
+//! dependency edge.
 //!
-//! These tests use `oxisql-embedded = "0.2.0"` with `features = ["fjall-storage"]`
+//! These tests use `oxisql-embedded = "0.4.0"` with `features = ["fjall-storage"]`
 //! as a dev-dependency (crates.io, no cross-workspace path coupling).
 //!
 //! The key scenarios verified:
@@ -15,7 +17,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use oxisql_core_02::{Connection, Value};
+use oxisql_core::{Connection, Value};
 use oxisql_embedded::FjallEmbeddedConnection;
 
 // ── helpers ──────────────────────────────────────────────────────────────────

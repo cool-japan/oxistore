@@ -5,6 +5,147 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-08-07
+
+> **Minor version jump (0.2.1 → 0.3.0), not a patch release.** `0.2.1` was
+> never published to crates.io (this section absorbs everything that would
+> otherwise have shipped under that tag). The bump is minor rather than
+> patch because the last published version, `oxistore-cache` `0.2.0`, still
+> exposes the `sql` feature (`SqlQueryCache` / `SqlPlanCache` /
+> `CachedQueryRunner`), and that feature is removed in this release (see
+> **Removed**, below) as part of structurally breaking the `oxistore` ⇄
+> `oxisql` circular dependency — a breaking removal against the last
+> published API, hence semver-minor.
+
+### Added
+
+- **`oxistore-encrypt`**: `EnvelopeTxn` / `EnvelopeSnapshot` — `KvTxn` / `KvSnapshot`
+  implementations for `EncryptedKvEnvelope<S>`, so envelope-encrypted stores support
+  transactions (raw-key AAD, read-your-writes, delegated commit/rollback) and
+  point-in-time snapshots, matching the cell-level `EncryptedKv` decorator's coverage.
+- **`oxistore-encrypt`**: `Pkcs11KeyProvider` — a PKCS#11 HSM-backed `KeyProvider`
+  bridge behind the opt-in `oxicrypto-pkcs11` feature. Pulls
+  `oxicrypto-adapter-pkcs11` from crates.io (not a path dependency, so no upward
+  coupling is reintroduced into `oxistore`); off by default, so the default build
+  stays 100% Pure Rust. Extractable keys only — see the module doc for the honest
+  limitation on non-extractable HSM keys.
+- `rustfmt.toml` and `clippy.toml` at the workspace root, pinning the existing
+  (already rustfmt-stable-default-compatible) formatting style and the workspace
+  MSRV (`1.89`) for clippy's MSRV-aware lints.
+- `deny.toml`: additional COOLJAPAN ban-row tripwires — `zip` / `tar` / `bzip2` / `lz4`
+  (→ `oxiarc-*`), `bincode` (→ `oxicode`), `rustfft` (→ `oxifft`), and
+  `openblas-src` / `blas-sys` (→ `oxiblas`). None of these are in the current
+  dependency tree; the rows guard against a future transitive addition.
+- Runnable `examples/` for all 12 member crates that previously had none (only the
+  `oxistore` facade had examples before this release) — see each crate's
+  `examples/` directory for the full list.
+- `cargo-fuzz` targets over the ciphertext/response parsers that consume
+  untrusted bytes and had no prior fuzz coverage: `crates/oxistore-encrypt/fuzz`
+  (`envelope_decrypt` over `EnvelopeCipher::decrypt`, `cell_decrypt` over
+  `decrypt_cell` — the crate's two independent wire formats),
+  `crates/oxistore-blob-s3/fuzz` (`s3_error_xml` over `S3ErrorResponse::parse`,
+  the S3 XML error-body parser), and `crates/oxistore-blob-azure/fuzz`
+  (`azure_list_response_xml` over the now-`pub` `parse_list_response`, the
+  Azure `ListBlobs` XML response parser — widened from private to `pub` solely
+  so the fuzz target can reach it; no behavior change). Each `fuzz/` directory
+  is a detached mini-workspace (own `[workspace]` stanza; confirmed via
+  `cargo metadata` that none of the four appear as root-workspace members, so
+  `cargo build --workspace` is unaffected) with a checked-in `seeds/<target>/`
+  directory of real, well-formed inputs, kept separate from cargo-fuzz's own
+  gitignored `corpus/<target>/` mutation-output directory. All four targets
+  were built and run for real (`cargo +nightly fuzz run <target>
+  fuzz/corpus/<target> fuzz/seeds/<target>`, ASan + libFuzzer) with zero
+  crashes across roughly 3M total executions.
+
+### Changed
+
+- **`oxistore-kv-redb`, `oxistore-kv-sled`, `oxistore-kv-fjall`**: a TTL-less write
+  through `batch_write`, a committed transaction `put`, or `compare_and_swap` now
+  clears any stale TTL sidecar entry left by an earlier `put_with_ttl`/`expire` call
+  on the same key — previously only the plain `put()` path did this (the original
+  backlog fix). `delete`/`batch_delete` also clear the sidecar entry so `ttl()`
+  cannot report an expiry for an absent key.
+- **`oxistore-kv-fjall`**: brought up to parity with the redb/sled TTL work —
+  `range`/`prefix_scan`/`count`/`iter`/`keys` now honor TTL expiry (previously only
+  `get()` did), and `FjallTxn`/`FjallSnap` now also honor TTL (`FjallSnap` gained a
+  `captured_at_millis` field for a point-in-time-consistent view).
+- New `publish = false` workspace member `oxistore-interop-tests` now hosts all
+  cross-workspace `oxisql` integration tests (moved out of `oxistore-kv-redb`,
+  `oxistore-kv-sled`, `oxistore-kv-fjall`, `oxistore-blob`, and
+  `oxistore-encrypt`) so that **no publishable `oxistore` crate depends on any
+  `oxisql-*` crate** — this structurally removes the `oxistore -> oxisql` edge
+  from the crates.io dependency graph (`oxisql` depends on `oxistore`, so the
+  reverse edge would otherwise be a publish cycle). `oxisql-core`,
+  `oxisql-embedded`, and `oxisql-pool` remain declared once in
+  `[workspace.dependencies]` and are consumed via `.workspace = true`, now only
+  by this one dev-only crate (the `oxisql-core-02` rename alias, previously
+  needed because five different crates pulled `oxisql-core` under two names, is
+  gone — the single consumer imports it under its plain name).
+- `Cargo.toml`: the `quick-xml` workspace dependency now resolves to
+  `oxixml-quickxml-compat` (a drop-in COOLJAPAN shim over `oxixml-xml`) instead of
+  upstream `quick-xml`; `deny.toml` gained a matching tripwire ban row.
+- Test wording: `oxistore-encrypt`'s "`KeyringKey` stub must return ..." test names
+  and assertion messages reworded to "... without the `os-keyring` feature enabled"
+  — the behavior was never a stub (`KeyringUnavailable` is the correct, real error
+  returned when the optional `os-keyring` feature is off); only the wording was
+  stale.
+- **Dependency bumps** (accumulated over the 0.2.0 → 0.3.0 window, net deltas):
+  `oxiarc-deflate` / `oxiarc-core` `0.3.3` → `0.4.1`; `oxicrypto` / `oxicrypto-sig`
+  `0.2.0` → `0.3.0` (`oxicrypto-adapter-pkcs11` newly introduced alongside the
+  `Pkcs11KeyProvider` bridge above, now at `0.3.0` to match); `oxihttp-client`
+  `0.2.0` → `0.2.1`; `base64` `0.22.1` → `0.23.0`; upstream `quick-xml` `0.40.1` →
+  `0.41.0` before being replaced outright by `oxixml-quickxml-compat` `0.1.0` →
+  `0.1.1` (see above); `oxisql-core` `0.3.0` → `0.4.0`, with `oxisql-embedded` and
+  `oxisql-pool` newly declared at `0.4.0` — all three `oxisql-*` entries are
+  dev-only now, consumed solely by `oxistore-interop-tests`.
+- All 13 publishable workspace crates (`oxistore-interop-tests` is
+  `publish = false` and excluded) bumped to `0.3.0` in lockstep, from the
+  unpublished `0.2.1` working version — `0.2.0` remains the last version
+  actually published to crates.io (see the note at the top of this section).
+
+### Fixed
+
+- **`oxistore-blob-s3`**: object keys and the `x-amz-copy-source` header are now
+  percent-encoded per path segment (preserving `/` as the separator) instead of
+  interpolated raw into the URL path — a key containing a space, `#`, or other
+  reserved/non-ASCII character no longer produces a malformed request.
+- **`oxistore-blob-s3`**: `SigningSettings::default()` is documented-wrong for S3
+  and has been corrected at both signing entry points (header signing in
+  `sigv4::sign_request`, query-param signing in `presign_get`/`presign_put`):
+  `percent_encoding_mode = Single` (matching the now-single-encoded wire path from
+  the fix above — the previous `Double` default re-encoded the path and would have
+  produced `SignatureDoesNotMatch` for any key needing escaping),
+  `uri_path_normalization_mode = Disabled` (the `Enabled` default collapsed `//`
+  and `/./` sequences that keys may legitimately contain), and, for header signing
+  only, `payload_checksum_kind = XAmzSha256` so `x-amz-content-sha256` is actually
+  sent (real AWS S3 requires this header; the previous `NoHeader` default omitted
+  it, which MinIO and the in-process mock server both silently tolerated).
+- **`oxistore-blob-s3`**: the `CompleteMultipartUpload` XML request body is now
+  built via `quick_xml::Writer` instead of hand-rolled string concatenation, so an
+  ETag containing `&`, `<`, or `>` is correctly escaped instead of producing a
+  malformed request body.
+- **`oxistore-blob-azure`**: blob keys are now percent-encoded in the URL path
+  (`blob_url`) and in the list `prefix`/`marker` query parameters, mirroring the S3
+  fix above — a key containing `?`, `#`, a space, or a non-ASCII character
+  previously produced a malformed request or silently targeted the wrong blob (a
+  raw `?`/`#` was reinterpreted as the start of the query string/fragment).
+- Flaky test infra: `oxistore/tests/cross_backend.rs`'s `unique_temp_dir` helper
+  now includes a monotonic atomic counter in addition to the timestamp, eliminating
+  a rare temp-directory collision between concurrently-running backend test suites;
+  the `ttl_expiry` test's timing windows were widened (300ms TTL / 900ms sleep, up
+  from 100ms/500ms) for the same class of flakiness under parallel/loaded runs.
+
+### Removed
+
+- **`oxistore-cache`**: the `sql` feature and `src/sql_cache.rs`
+  (`SqlQueryCache`, `SqlPlanCache`, `CachedQueryRunner`), part of the same
+  cycle-breaking pass described above — `oxistore-cache` must not depend on
+  `oxisql-core` for the published dependency graph to stay acyclic. The
+  equivalent functionality now lives in the `oxisql-cache` crate in the
+  `oxisql` repo, which depends on `oxistore-cache` rather than the reverse.
+  This feature was never part of the crate's default build, so no default
+  consumer is affected.
+
 ## [0.2.0] - 2026-06-23
 
 ### Changed

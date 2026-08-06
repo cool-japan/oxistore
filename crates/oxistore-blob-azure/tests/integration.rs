@@ -357,6 +357,37 @@ async fn azure_delete_missing_returns_not_found() {
     assert!(matches!(err, BlobError::NotFound(_)));
 }
 
+// ── Test: blob_url percent-encodes special characters ────────────────────────
+
+/// Regression test: a key containing a space, `#`, and a non-ASCII character
+/// must be percent-encoded in the request path.  Before the fix, `blob_url`
+/// interpolated the key verbatim: a raw `#` would truncate the path at the
+/// URL fragment delimiter and a raw `?` would start a query string, silently
+/// targeting the wrong blob (or none at all).
+#[tokio::test]
+async fn azure_blob_url_percent_encodes_special_characters_in_key() {
+    let (port, handle) = spawn_mock("HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n").await;
+    let store = AzureBlobStore::new(mock_config(port)).unwrap();
+    store
+        .put("a b#c\u{2665}.txt", Bytes::from("x"))
+        .await
+        .expect("put with space, '#', and non-ASCII character in key");
+    let req = handle.await.unwrap();
+    assert_eq!(req.method, "PUT");
+
+    // Space -> %20, '#' -> %23, U+2665 ('♥') -> its UTF-8 bytes percent-encoded.
+    assert!(
+        req.path.contains("a%20b%23c%E2%99%A5.txt"),
+        "expected percent-encoded key in request path, got: {}",
+        req.path
+    );
+    // The raw characters must never appear in the path: a literal '#' would
+    // be reinterpreted as the fragment delimiter, silently truncating the
+    // path sent on the wire.
+    assert!(!req.path.contains('#'), "path must not contain a raw '#'");
+    assert!(!req.path.contains(' '), "path must not contain a raw space");
+}
+
 // ── Test: LIST pagination yields all keys ────────────────────────────────────
 
 // Content-Length values verified by Python:

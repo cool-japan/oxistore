@@ -71,11 +71,19 @@ impl AzureBlobStore {
 
     /// Full URL for a blob.
     ///
-    /// **Note**: `key` is used verbatim in the URL path.  Keys containing
-    /// `?`, `#`, spaces, or non-ASCII characters must be percent-encoded by
-    /// the caller before passing to BlobStore methods.
+    /// `key` is percent-encoded per path segment (preserving `/` as the
+    /// segment separator) via [`percent_encode`], so keys containing `?`,
+    /// `#`, spaces, or non-ASCII characters produce a well-formed URL — a
+    /// raw `?`/`#` in an un-encoded key would otherwise be reinterpreted as
+    /// the start of the query string / fragment, silently truncating the
+    /// path or targeting the wrong blob.
     fn blob_url(&self, key: &str) -> String {
-        format!("{}/{}/{}", self.endpoint(), self.config.container, key)
+        format!(
+            "{}/{}/{}",
+            self.endpoint(),
+            self.config.container,
+            percent_encode(key)
+        )
     }
 
     /// Build the standard x-ms-* headers for every request.
@@ -309,11 +317,11 @@ impl BlobStore for AzureBlobStore {
                     "{}/{}?restype=container&comp=list&prefix={}",
                     endpoint,
                     container,
-                    url_encode(&prefix_owned)
+                    percent_encode(&prefix_owned)
                 );
                 if let Some(ref m) = marker {
                     list_url.push_str("&marker=");
-                    list_url.push_str(&url_encode(m));
+                    list_url.push_str(&percent_encode(m));
                 }
 
                 let list_date = rfc1123_now();
@@ -366,8 +374,22 @@ impl BlobStore for AzureBlobStore {
 
 // ── XML parsing ───────────────────────────────────────────────────────────────
 
-/// Parse the ListBlobs XML response, returning (blob_names, next_marker).
-fn parse_list_response(body: &[u8]) -> Result<(Vec<String>, Option<String>), BlobError> {
+/// Parse an Azure Blob Storage `ListBlobs` (`EnumerationResults`) XML
+/// response body, returning `(blob_names, next_marker)`.
+///
+/// `body` is untrusted network input — the response of a real Azure Blob
+/// Storage (or Azurite-emulated) `?restype=container&comp=list` request.
+/// Public (beyond `pub(crate)`) so it can be exercised directly by
+/// `fuzz/fuzz_targets/azure_list_response_xml.rs` without constructing a
+/// live `AzureBlobStore` and HTTP round trip.
+///
+/// # Errors
+///
+/// Returns [`BlobError::Other`] if `body` is not well-formed XML. Malformed
+/// or unexpected-but-well-formed XML (e.g. missing `Name`/`NextMarker`
+/// elements) is tolerated and simply yields fewer results, rather than
+/// rejecting the whole response over one missing optional field.
+pub fn parse_list_response(body: &[u8]) -> Result<(Vec<String>, Option<String>), BlobError> {
     use quick_xml::events::Event;
     use quick_xml::Reader;
 
@@ -425,12 +447,19 @@ fn parse_list_response(body: &[u8]) -> Result<(Vec<String>, Option<String>), Blo
 
 // ── URL encoding ─────────────────────────────────────────────────────────────
 
-/// Percent-encode a string for use in URL query parameters (RFC 3986 unreserved chars).
-fn url_encode(s: &str) -> String {
+/// Percent-encode a string for use as a URL path segment (object key) or as a
+/// query parameter value (list `prefix`/`marker`).  `/` is left unescaped so
+/// callers can use this to encode a full blob key while preserving its
+/// path-segment structure.
+///
+/// Mirrors `oxistore_blob_s3::percent_encode` — see the S3 backend for the
+/// equivalent fix (this crate's `blob_url` previously used keys verbatim,
+/// which broke on `?`, `#`, spaces, and non-ASCII characters).
+fn percent_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for byte in s.bytes() {
         match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
                 out.push(byte as char);
             }
             _ => {

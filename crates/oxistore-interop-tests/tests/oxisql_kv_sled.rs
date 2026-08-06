@@ -1,8 +1,10 @@
 //! Integration tests verifying that the sled backend in `oxisql-embedded`
 //! (`SledEmbeddedConnection` / `SledGlueStorage`) correctly persists SQL data
-//! to disk and is interoperable with `oxistore-kv-sled`.
+//! to disk. Lives in `oxistore-interop-tests` (not `oxistore-kv-sled`) so
+//! that the publishable `oxistore-kv-sled` crate carries no `oxisql`
+//! dependency edge.
 //!
-//! These tests use `oxisql-embedded = "0.2.0"` with `features = ["sled-storage"]`
+//! These tests use `oxisql-embedded = "0.4.0"` with `features = ["sled-storage"]`
 //! as a dev-dependency (crates.io version, no cross-workspace path coupling).
 //!
 //! Note: sled does not support an in-memory mode; all connections are file-backed.
@@ -19,7 +21,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use oxisql_core_02::{Connection, Value};
+use oxisql_core::{Connection, Value};
 use oxisql_embedded::SledEmbeddedConnection;
 
 // ── helpers ──────────────────────────────────────────────────────────────────

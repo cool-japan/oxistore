@@ -90,6 +90,8 @@ impl MockResponse {
 /// Captured request for auth-header inspection.
 #[derive(Debug, Default, Clone)]
 struct CapturedRequest {
+    /// The raw HTTP request line, e.g. `"PUT /bucket/my%20key HTTP/1.1"`.
+    request_line: String,
     headers: HashMap<String, String>,
 }
 
@@ -188,8 +190,8 @@ async fn spawn_mock(
 fn parse_captured_request(raw: &[u8]) -> CapturedRequest {
     let text = String::from_utf8_lossy(raw);
     let mut lines = text.lines();
-    // Skip the request line (method + path + version)
-    let _ = lines.next();
+    // Capture the request line (method + path + version), then skip it.
+    let request_line = lines.next().unwrap_or_default().to_string();
 
     let mut headers = HashMap::new();
     for line in lines {
@@ -201,7 +203,10 @@ fn parse_captured_request(raw: &[u8]) -> CapturedRequest {
         }
     }
 
-    CapturedRequest { headers }
+    CapturedRequest {
+        request_line,
+        headers,
+    }
 }
 
 /// Build an S3BlobStore (trait object) pointing at a mock server on localhost.
@@ -348,6 +353,74 @@ async fn s3_auth_header_well_formed() {
     assert!(
         auth.contains("AWS4-HMAC-SHA256"),
         "expected AWS4-HMAC-SHA256 in Authorization but got: {auth}"
+    );
+}
+
+/// Regression test for the `SigningSettings::default()` fix.
+///
+/// Real AWS S3 requires `x-amz-content-sha256` on every signed (header-auth)
+/// request; `SigningSettings::default()`'s `PayloadChecksumKind::NoHeader`
+/// never emits it. Separately, `object_url()` already single-encodes the
+/// object key (`percent_encode`), so the canonical request signed by
+/// `aws-sigv4` must also treat the path as single-encoded
+/// (`PercentEncodingMode::Single`) — the `Double` default would sign
+/// `/bucket/my%2520file.txt` while the literal wire path stays
+/// `/bucket/my%20file.txt`, guaranteeing `SignatureDoesNotMatch` for any key
+/// needing escaping.
+#[tokio::test]
+async fn s3_signing_settings_content_sha256_and_single_encoding() {
+    let capture = Arc::new(Mutex::new(Vec::new()));
+    let responses = vec![MockResponse::ok_empty()];
+    let port = spawn_mock(responses, capture.clone()).await;
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+    let store = mock_store(port);
+    store
+        .put("my file.txt", Bytes::from("data"))
+        .await
+        .expect("put with space in key");
+
+    let requests = capture.lock().expect("lock");
+    let req = requests.first().expect("at least one request captured");
+
+    // x-amz-content-sha256 must be present and be the sha256 of an empty
+    // input's well-known constant is NOT expected here (body is non-empty);
+    // just assert the header exists and looks like a hex sha256 digest.
+    let content_sha256 = req
+        .headers
+        .get("x-amz-content-sha256")
+        .expect("x-amz-content-sha256 header must be present for S3");
+    assert_eq!(
+        content_sha256.len(),
+        64,
+        "x-amz-content-sha256 must be a 64-char hex digest, got: {content_sha256}"
+    );
+    assert!(
+        content_sha256.chars().all(|c| c.is_ascii_hexdigit()),
+        "x-amz-content-sha256 must be hex, got: {content_sha256}"
+    );
+
+    // x-amz-content-sha256 must also be part of SignedHeaders (it is only
+    // useful as an integrity check if it was actually signed).
+    let auth = req
+        .headers
+        .get("authorization")
+        .expect("authorization header present");
+    assert!(
+        auth.contains("x-amz-content-sha256"),
+        "x-amz-content-sha256 must be in SignedHeaders: {auth}"
+    );
+
+    // The wire path must be *single*-encoded: a space becomes `%20`, not the
+    // double-encoded `%2520`.
+    let request_line = &req.request_line;
+    assert!(
+        request_line.contains("/testbucket/my%20file.txt"),
+        "expected single-encoded space in request path, got: {request_line}"
+    );
+    assert!(
+        !request_line.contains("%2520"),
+        "path must not be double-encoded: {request_line}"
     );
 }
 
@@ -752,6 +825,76 @@ async fn s3_copy_request_has_copy_source_header() {
     assert!(
         copy_source.contains("src-key"),
         "x-amz-copy-source should include src-key: {copy_source}"
+    );
+}
+
+/// A key containing spaces and reserved URL characters must be percent-encoded
+/// per path segment in the request path, not interpolated raw. This guards
+/// against malformed request lines / mismatched SigV4 canonicalization.
+#[tokio::test]
+async fn s3_key_with_special_chars_is_percent_encoded_in_request_path() {
+    let capture = Arc::new(Mutex::new(Vec::new()));
+    let responses = vec![MockResponse::ok_empty()];
+    let port = spawn_mock(responses, capture.clone()).await;
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+    let store = mock_s3_store(port);
+    let key = "my dir/file #1 (v2).txt";
+    store
+        .put(key, Bytes::from("payload"))
+        .await
+        .expect("put with special-char key should succeed");
+
+    let reqs = capture.lock().expect("lock");
+    let req = reqs.first().expect("one request captured");
+    let path = req
+        .request_line
+        .split_whitespace()
+        .nth(1)
+        .expect("request line has a path token");
+
+    assert!(
+        !path.contains(' ') && !path.contains('#') && !path.contains('(') && !path.contains(')'),
+        "path must not contain raw reserved characters: {path}"
+    );
+    assert!(
+        path.contains("my%20dir/file%20%231%20%28v2%29.txt"),
+        "path should contain the per-segment percent-encoded key: {path}"
+    );
+}
+
+/// Server-side copy with a source key containing reserved characters must
+/// percent-encode the key portion of `x-amz-copy-source`.
+#[tokio::test]
+async fn s3_copy_source_key_with_special_chars_is_percent_encoded() {
+    let capture = Arc::new(Mutex::new(Vec::new()));
+    let responses = vec![MockResponse::xml_body(
+        200,
+        b"<?xml version=\"1.0\"?><CopyObjectResult><LastModified>2026-01-01T00:00:00Z</LastModified><ETag>\"abc\"</ETag></CopyObjectResult>".as_slice(),
+    )];
+    let port = spawn_mock(responses, capture.clone()).await;
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+    let store = mock_s3_store(port);
+    store
+        .copy("dir/needs escaping?.txt", "dst-key")
+        .await
+        .expect("copy with special-char source key should succeed");
+
+    let reqs = capture.lock().expect("lock");
+    let req = reqs.first().expect("one request captured");
+    let copy_source = req
+        .headers
+        .get("x-amz-copy-source")
+        .expect("x-amz-copy-source header present");
+
+    assert!(
+        !copy_source.contains(' ') && !copy_source.contains('?'),
+        "copy-source key must not contain raw reserved characters: {copy_source}"
+    );
+    assert!(
+        copy_source.contains("dir/needs%20escaping%3F.txt"),
+        "copy-source should contain the percent-encoded src key: {copy_source}"
     );
 }
 

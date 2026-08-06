@@ -44,6 +44,15 @@ fn decode_expiry(b: &[u8]) -> Option<u64> {
     b.try_into().ok().map(u64::from_le_bytes)
 }
 
+/// Current wall-clock time in unix-epoch milliseconds (saturating to 0 on a
+/// clock earlier than the epoch).
+fn now_epoch_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// A [`KvStore`] backed by [fjall](https://crates.io/crates/fjall).
 ///
 /// All data is stored in a single keyspace named `"default"`.  The
@@ -385,7 +394,7 @@ impl FjallStore {
     /// # use oxistore_kv_fjall::FjallStore;
     /// # use std::time::Duration;
     /// let store = FjallStore::open_in_memory().unwrap();
-    /// let writer = store.rate_limiter(500, Duration::from_secs(1));
+    /// let mut writer = store.rate_limiter(500, Duration::from_secs(1));
     /// writer.put(b"k", b"v").unwrap();
     /// ```
     #[must_use]
@@ -399,6 +408,29 @@ impl FjallStore {
             writes_per_period,
             period,
             counter: 0,
+        }
+    }
+
+    /// Returns `true` if `key` has an associated TTL entry that has already
+    /// expired.
+    ///
+    /// Mirrors the expiry check performed by [`KvStore::get`] but does not
+    /// evict — callers that iterate multiple keys (range, prefix scan, full
+    /// iteration, counting, key listing) use this to keep expired entries out
+    /// of scan results without mutating the keyspace mid-iteration. A
+    /// missing or malformed TTL entry is treated as "not expired", which
+    /// matches `get`'s fall-through behaviour.
+    fn is_ttl_expired(&self, key: &[u8]) -> Result<bool, StoreError> {
+        match self
+            .ttl_keyspace
+            .get(key)
+            .map_err(|e| StoreError::Other(e.to_string()))?
+        {
+            Some(expiry_bytes) => match decode_expiry(&expiry_bytes) {
+                Some(expiry_millis) => Ok(is_expired(expiry_millis)),
+                None => Ok(false),
+            },
+            None => Ok(false),
         }
     }
 }
@@ -503,45 +535,56 @@ impl KvStore for FjallStore {
     }
 
     fn put(&self, key: &[u8], value: &[u8]) -> Result<(), StoreError> {
-        self.keyspace
-            .insert(key, value)
-            .map_err(|e| StoreError::Other(e.to_string()))
+        // A fresh, TTL-less write must not inherit a stale expiry from a
+        // previous `put_with_ttl`/`expire` call on this key — otherwise the
+        // new value would be silently evicted at the old expiry. Both writes
+        // land in the same fjall batch, so they commit atomically.
+        let mut batch = self.db.batch();
+        batch.insert(&self.keyspace, key, value);
+        batch.remove(&self.ttl_keyspace, key);
+        batch.commit().map_err(|e| StoreError::Other(e.to_string()))
     }
 
     fn delete(&self, key: &[u8]) -> Result<(), StoreError> {
-        self.keyspace
-            .remove(key)
-            .map_err(|e| StoreError::Other(e.to_string()))
+        // Clear any TTL sidecar entry so `ttl()` cannot report an expiry for
+        // an absent key, and so a future key reuse via `batch_write` doesn't
+        // inherit an orphaned entry.
+        let mut batch = self.db.batch();
+        batch.remove(&self.keyspace, key);
+        batch.remove(&self.ttl_keyspace, key);
+        batch.commit().map_err(|e| StoreError::Other(e.to_string()))
     }
 
     fn range<'a>(&'a self, lo: &[u8], hi: &[u8]) -> Result<RangeIter<'a>, StoreError> {
         let lo_owned = lo.to_vec();
         let hi_owned = hi.to_vec();
-        let pairs: Vec<oxistore_core::RangeItem> = self
-            .keyspace
-            .range(lo_owned..hi_owned)
-            .map(|guard| {
-                guard
-                    .into_inner()
-                    .map(|(k, v)| (k.to_vec(), v.to_vec()))
-                    .map_err(|e| StoreError::Other(e.to_string()))
-            })
-            .collect();
+        let mut pairs: Vec<oxistore_core::RangeItem> = Vec::new();
+        for guard in self.keyspace.range(lo_owned..hi_owned) {
+            let (k, v) = guard
+                .into_inner()
+                .map_err(|e| StoreError::Other(e.to_string()))?;
+            let key = k.to_vec();
+            if self.is_ttl_expired(&key)? {
+                continue;
+            }
+            pairs.push(Ok((key, v.to_vec())));
+        }
         Ok(Box::new(pairs.into_iter()))
     }
 
     fn prefix_scan<'a>(&'a self, prefix: &[u8]) -> Result<RangeIter<'a>, StoreError> {
         let prefix_owned = prefix.to_vec();
-        let pairs: Vec<oxistore_core::RangeItem> = self
-            .keyspace
-            .prefix(&prefix_owned)
-            .map(|guard| {
-                guard
-                    .into_inner()
-                    .map(|(k, v)| (k.to_vec(), v.to_vec()))
-                    .map_err(|e| StoreError::Other(e.to_string()))
-            })
-            .collect();
+        let mut pairs: Vec<oxistore_core::RangeItem> = Vec::new();
+        for guard in self.keyspace.prefix(&prefix_owned) {
+            let (k, v) = guard
+                .into_inner()
+                .map_err(|e| StoreError::Other(e.to_string()))?;
+            let key = k.to_vec();
+            if self.is_ttl_expired(&key)? {
+                continue;
+            }
+            pairs.push(Ok((key, v.to_vec())));
+        }
         Ok(Box::new(pairs.into_iter()))
     }
 
@@ -549,6 +592,9 @@ impl KvStore for FjallStore {
         let mut batch = self.db.batch();
         for &(k, v) in pairs {
             batch.insert(&self.keyspace, k, v);
+            // Same stale-TTL-clear as `put` — a batch write is a TTL-less
+            // write for every key it touches.
+            batch.remove(&self.ttl_keyspace, k);
         }
         batch.commit().map_err(|e| StoreError::Other(e.to_string()))
     }
@@ -557,16 +603,29 @@ impl KvStore for FjallStore {
         let mut batch = self.db.batch();
         for &k in keys {
             batch.remove(&self.keyspace, k);
+            batch.remove(&self.ttl_keyspace, k);
         }
         batch.commit().map_err(|e| StoreError::Other(e.to_string()))
     }
 
     fn count(&self) -> Result<u64, StoreError> {
-        let n = self
-            .keyspace
-            .len()
-            .map_err(|e| StoreError::Other(e.to_string()))?;
-        Ok(n as u64)
+        // `Keyspace::len` counts raw entries, including those with an
+        // expired-but-not-yet-evicted TTL, so it must not be used directly:
+        // filter each key against the TTL keyspace to match `get`'s
+        // visibility. When no key has ever had a TTL, `ttl_keyspace` is
+        // empty and every lookup below is a fast negative, so this stays
+        // cheap for the common (no-TTL) case.
+        let mut count = 0u64;
+        for guard in self.keyspace.iter() {
+            let (k, _v) = guard
+                .into_inner()
+                .map_err(|e| StoreError::Other(e.to_string()))?;
+            if self.is_ttl_expired(&k)? {
+                continue;
+            }
+            count += 1;
+        }
+        Ok(count)
     }
 
     fn size_on_disk(&self) -> Result<u64, StoreError> {
@@ -574,30 +633,35 @@ impl KvStore for FjallStore {
     }
 
     fn iter<'a>(&'a self) -> Result<RangeIter<'a>, StoreError> {
-        let pairs: Vec<oxistore_core::RangeItem> = self
-            .keyspace
-            .iter()
-            .map(|guard| {
-                guard
-                    .into_inner()
-                    .map(|(k, v)| (k.to_vec(), v.to_vec()))
-                    .map_err(|e| StoreError::Other(e.to_string()))
-            })
-            .collect();
+        let mut pairs: Vec<oxistore_core::RangeItem> = Vec::new();
+        for guard in self.keyspace.iter() {
+            let (k, v) = guard
+                .into_inner()
+                .map_err(|e| StoreError::Other(e.to_string()))?;
+            let key = k.to_vec();
+            if self.is_ttl_expired(&key)? {
+                continue;
+            }
+            pairs.push(Ok((key, v.to_vec())));
+        }
         Ok(Box::new(pairs.into_iter()))
     }
 
     fn keys<'a>(&'a self) -> Result<KeysIter<'a>, StoreError> {
-        let keys: Vec<Result<Vec<u8>, StoreError>> = self
-            .keyspace
-            .iter()
-            .map(|guard| {
-                guard
-                    .into_inner()
-                    .map(|(k, _v)| k.to_vec())
-                    .map_err(|e| StoreError::Other(e.to_string()))
-            })
-            .collect();
+        let mut keys: Vec<Result<Vec<u8>, StoreError>> = Vec::new();
+        for guard in self.keyspace.iter() {
+            match guard.into_inner() {
+                Ok((k, _v)) => {
+                    let key = k.to_vec();
+                    match self.is_ttl_expired(&key) {
+                        Ok(true) => continue,
+                        Ok(false) => keys.push(Ok(key)),
+                        Err(e) => keys.push(Err(e)),
+                    }
+                }
+                Err(e) => keys.push(Err(StoreError::Other(e.to_string()))),
+            }
+        }
         Ok(Box::new(keys.into_iter()))
     }
 
@@ -605,6 +669,7 @@ impl KvStore for FjallStore {
         Ok(Box::new(FjallTxn {
             batch: Some(self.db.batch()),
             keyspace: &self.keyspace,
+            ttl_keyspace: &self.ttl_keyspace,
             overlay: BTreeMap::new(),
             _lock: self
                 .txn_lock
@@ -617,6 +682,8 @@ impl KvStore for FjallStore {
         Ok(Box::new(FjallSnap {
             snap: self.db.snapshot(),
             keyspace: &self.keyspace,
+            ttl_keyspace: &self.ttl_keyspace,
+            captured_at_millis: now_epoch_millis(),
         }))
     }
 
@@ -781,10 +848,36 @@ pub struct FjallTxn<'a> {
     /// The write batch; `None` after commit or rollback.
     batch: Option<fjall::OwnedWriteBatch>,
     keyspace: &'a Keyspace,
+    /// TTL sidecar keyspace, so a TTL-less write through a transaction cannot
+    /// inherit a stale expiry from an earlier `put_with_ttl`/`expire` call,
+    /// a deleted key cannot resurrect with a phantom TTL, and reads honor
+    /// expiry the same way `FjallStore::get` does.
+    ttl_keyspace: &'a Keyspace,
     /// Local overlay for read-your-writes.
     overlay: BTreeMap<Vec<u8>, TxnOp>,
     /// Held to serialise concurrent transactions.
     _lock: std::sync::MutexGuard<'a, ()>,
+}
+
+impl FjallTxn<'_> {
+    /// Whether a committed key's TTL has already elapsed as of now.
+    ///
+    /// A transaction is a *live* view, so TTL is evaluated at read time
+    /// (consistent with `FjallStore::get`). Reads never mutate the store, so
+    /// an expired key is merely hidden here; physical removal happens on the
+    /// next store-level access or `purge_expired`.
+    fn committed_key_expired(&self, key: &[u8]) -> Result<bool, StoreError> {
+        match self
+            .ttl_keyspace
+            .get(key)
+            .map_err(|e| StoreError::Other(e.to_string()))?
+        {
+            Some(expiry_bytes) => Ok(decode_expiry(&expiry_bytes)
+                .map(is_expired)
+                .unwrap_or(false)),
+            None => Ok(false),
+        }
+    }
 }
 
 impl KvTxn for FjallTxn<'_> {
@@ -796,7 +889,10 @@ impl KvTxn for FjallTxn<'_> {
                 TxnOp::Delete => Ok(None),
             };
         }
-        // Fall through to committed state.
+        // Fall through to committed state, honoring TTL.
+        if self.committed_key_expired(key)? {
+            return Ok(None);
+        }
         self.keyspace
             .get(key)
             .map(|opt| opt.map(|v| v.to_vec()))
@@ -809,6 +905,9 @@ impl KvTxn for FjallTxn<'_> {
             .as_mut()
             .ok_or_else(|| StoreError::Other("transaction already consumed".to_string()))?;
         batch.insert(self.keyspace, key, value);
+        // Clear any stale TTL sidecar entry in the same batch, so it commits
+        // atomically with the data write (mirrors `FjallStore::put`).
+        batch.remove(self.ttl_keyspace, key);
         self.overlay
             .insert(key.to_vec(), TxnOp::Put(value.to_vec()));
         Ok(())
@@ -820,6 +919,7 @@ impl KvTxn for FjallTxn<'_> {
             .as_mut()
             .ok_or_else(|| StoreError::Other("transaction already consumed".to_string()))?;
         batch.remove(self.keyspace, key);
+        batch.remove(self.ttl_keyspace, key);
         self.overlay.insert(key.to_vec(), TxnOp::Delete);
         Ok(())
     }
@@ -832,15 +932,18 @@ impl KvTxn for FjallTxn<'_> {
         let lo_owned = lo.to_vec();
         let hi_owned = hi.to_vec();
 
-        // Start with committed data.
+        // Start with committed data, skipping any committed key whose TTL has
+        // already elapsed (consistent with `get`).
         let mut merged: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
         for guard in self.keyspace.range(lo_owned.clone()..hi_owned.clone()) {
-            match guard.into_inner() {
-                Ok((k, v)) => {
-                    merged.insert(k.to_vec(), v.to_vec());
-                }
-                Err(e) => return Err(StoreError::Other(e.to_string())),
+            let (k, v) = guard
+                .into_inner()
+                .map_err(|e| StoreError::Other(e.to_string()))?;
+            let key = k.to_vec();
+            if self.committed_key_expired(&key)? {
+                continue;
             }
+            merged.insert(key, v.to_vec());
         }
 
         // Apply overlay.
@@ -886,42 +989,69 @@ impl KvTxn for FjallTxn<'_> {
 pub struct FjallSnap<'a> {
     snap: fjall::Snapshot,
     keyspace: &'a Keyspace,
+    /// TTL sidecar keyspace, read through the same `fjall::Snapshot` so TTL
+    /// visibility is consistent with the point-in-time view.
+    ttl_keyspace: &'a Keyspace,
+    /// Wall-clock capture time (epoch millis). Keys whose TTL had elapsed by
+    /// this instant are excluded, keeping the view TTL-consistent with `get`
+    /// (mirrors `RedbSnapshot::captured_at_millis`).
+    captured_at_millis: u64,
+}
+
+impl FjallSnap<'_> {
+    /// Whether `key`'s TTL entry, read through this snapshot, had already
+    /// elapsed at capture time.
+    fn expired_at_capture(&self, key: &[u8]) -> Result<bool, StoreError> {
+        match self
+            .snap
+            .get(self.ttl_keyspace, key)
+            .map_err(|e| StoreError::Other(e.to_string()))?
+        {
+            Some(expiry_bytes) => match decode_expiry(&expiry_bytes) {
+                Some(expiry_millis) => Ok(expiry_millis <= self.captured_at_millis),
+                None => Ok(false),
+            },
+            None => Ok(false),
+        }
+    }
 }
 
 impl KvSnapshot for FjallSnap<'_> {
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+        if self.expired_at_capture(key)? {
+            return Ok(None);
+        }
         self.snap
             .get(self.keyspace, key)
             .map(|opt| opt.map(|v| v.to_vec()))
             .map_err(|e| StoreError::Other(e.to_string()))
     }
 
-    /// Perform a range scan on this snapshot without eagerly collecting results.
+    /// Perform a range scan on this snapshot, filtering out keys whose TTL
+    /// had already elapsed at snapshot-capture time.
     ///
-    /// The returned iterator is **lazy**: rows are decoded one at a time as the
-    /// caller advances the iterator, rather than materialising all matching
-    /// rows into a `Vec` upfront.  This is significantly more memory-efficient
-    /// for wide scans over large keyspaces.
-    ///
-    /// The snapshot is kept alive for the iterator's lifetime via the
-    /// underlying `fjall::Iter`, which holds a reference to the snapshot
-    /// nonce.
+    /// Unlike the pre-TTL-fix version, this eagerly materialises results into
+    /// a `Vec` rather than lazily streaming from `fjall::Iter`: each row now
+    /// requires a second point lookup into `ttl_keyspace` (through the same
+    /// snapshot) to check expiry, and interleaving that lookup with a live
+    /// `fjall::Iter` borrow over `keyspace` is not a relationship this crate
+    /// wants to depend on being safe. Matches the sled/redb backends, which
+    /// also materialise snapshot ranges into a `Vec`.
     fn range<'a>(&'a self, lo: &[u8], hi: &[u8]) -> Result<RangeIter<'a>, StoreError> {
         let lo_owned = lo.to_vec();
         let hi_owned = hi.to_vec();
-        // `fjall::Iter` is `Send + 'static`, so we can box it as `RangeIter<'a>`
-        // without any lifetime trouble — the snapshot nonce is held inside the
-        // `fjall::Iter` itself, keeping the GC watermark in place.
-        let iter = self
-            .snap
-            .range(self.keyspace, lo_owned..hi_owned)
-            .map(|guard| {
-                guard
-                    .into_inner()
-                    .map(|(k, v)| (k.to_vec(), v.to_vec()))
-                    .map_err(|e| StoreError::Other(e.to_string()))
-            });
-        Ok(Box::new(iter))
+        let mut pairs: Vec<oxistore_core::RangeItem> = Vec::new();
+        for guard in self.snap.range(self.keyspace, lo_owned..hi_owned) {
+            let (k, v) = guard
+                .into_inner()
+                .map_err(|e| StoreError::Other(e.to_string()))?;
+            let key = k.to_vec();
+            if self.expired_at_capture(&key)? {
+                continue;
+            }
+            pairs.push(Ok((key, v.to_vec())));
+        }
+        Ok(Box::new(pairs.into_iter()))
     }
 }
 

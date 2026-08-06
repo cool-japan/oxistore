@@ -11,12 +11,30 @@ deny = [
     # Parquet codec crates that must never appear in oxistore-columnar's dep tree.
     # oxistore-columnar uses default-features=false on parquet; these crates are
     # banned here as a tripwire to catch accidental codec feature activation.
+    # (`lz4_flex`, fjall's pure-Rust LZ4 implementation, is intentionally NOT
+    # banned — see the module docs in oxistore-kv-fjall/src/lib.rs.)
     { name = "snap" },
     { name = "brotli" },
     { name = "flate2" },
     { name = "miniz_oxide" },
     { name = "lz4-sys" },
+    { name = "lz4" },
     { name = "zstd" },
+    { name = "zip", use-instead = "oxiarc-*" },
+    { name = "tar", use-instead = "oxiarc-*" },
+    { name = "bzip2", use-instead = "oxiarc-*" },
+    # XML: use the COOLJAPAN oxixml crates instead. The workspace `quick-xml`
+    # dependency key is renamed to pull `oxixml-quickxml-compat` (a drop-in
+    # shim over `oxixml-xml`) via `package = "oxixml-quickxml-compat"`, so
+    # this is a tripwire against a future dependency accidentally pulling in
+    # the real upstream `quick-xml` crate.
+    { name = "quick-xml", use-instead = "oxixml-xml" },
+    # Serialization / FFT / BLAS: none of these are in the dep tree today —
+    # tripwires against a future dependency pulling one in transitively.
+    { name = "bincode", use-instead = "oxicode" },
+    { name = "rustfft", use-instead = "oxifft" },
+    { name = "openblas-src", use-instead = "oxiblas" },
+    { name = "blas-sys", use-instead = "oxiblas" },
 ]
 
 [licenses]

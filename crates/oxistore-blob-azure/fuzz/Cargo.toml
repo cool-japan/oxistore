@@ -1,0 +1,25 @@
+[package]
+name = "oxistore-blob-azure-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# Detach from the parent `oxistore` workspace — see the sibling comment in
+# oxistore-encrypt/fuzz/Cargo.toml for why.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.oxistore-blob-azure]
+path = ".."
+
+[[bin]]
+name = "azure_list_response_xml"
+path = "fuzz_targets/azure_list_response_xml.rs"
+test = false
+doc = false
+bench = false

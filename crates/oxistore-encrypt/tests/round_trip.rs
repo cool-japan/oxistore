@@ -227,5 +227,8 @@ fn keyring_key_returns_error() {
         col_id: 0,
     };
     let result = encrypt_cell(&provider, cell_id, b"data");
-    assert!(result.is_err(), "KeyringKey stub must return an error");
+    assert!(
+        result.is_err(),
+        "KeyringKey must return an error without the os-keyring feature enabled"
+    );
 }

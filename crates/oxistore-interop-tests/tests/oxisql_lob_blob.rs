@@ -2,6 +2,9 @@
 //! `oxistore-blob` with SQL metadata managed by `oxisql-embedded` (in-memory
 //! GlueSQL, the default backend — no extra features needed).
 //!
+//! Lives in `oxistore-interop-tests` (not `oxistore-blob`) so that the
+//! publishable `oxistore-blob` crate carries no `oxisql` dependency edge.
+//!
 //! This implements the pattern described in the blob TODO:
 //! "Integration with oxisql — store LOB (Large Object) data in blob storage
 //! from SQL queries (~30 SLOC)."
@@ -28,7 +31,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use oxisql_core_02::Connection;
+use oxisql_core::Connection;
 use oxisql_embedded::EmbeddedConnection;
 use oxistore_blob::{BlobStore, MemoryBlobStore};
 use tokio::sync::Mutex;
