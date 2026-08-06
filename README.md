@@ -16,7 +16,7 @@ The non-negotiable goal: a fresh `rust:slim` container running
 `cargo build --workspace --no-default-features` produces a working KV store
 with no `apt-get install` and no C toolchain.
 
-## Status: v0.3.0 — 2026-08-07
+## Status: v0.3.1 — Unreleased
 
 All milestones M0–M5 are complete. **949 tests passing** (4 skipped) across 13 crates
 on default features per crate (see `CHANGELOG.md` for the full `[0.3.0]` change list —
