@@ -78,10 +78,10 @@ ahash = { version = "0.8" }
 # integration tests. No publishable oxistore crate depends on `oxisql-*` —
 # this keeps the crates.io dependency graph acyclic (oxisql depends on
 # oxistore, so the reverse edge must not exist in any published crate).
-oxisql-core = "0.4.0"
+oxisql-core = "0.4.1"
 # Enables the storage-engine feature matching each moved test's backend
 # (e.g. `redb-storage`); the base entry here carries no features.
-oxisql-embedded = { version = "0.4.0" }
+oxisql-embedded = { version = "0.4.1" }
 # Used by the `EncryptedPooledStore` integration test.
-oxisql-pool = { version = "0.4.0" }
+oxisql-pool = { version = "0.4.1" }
 keyring-core = { version = "1.0.0" }
