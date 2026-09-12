@@ -31,8 +31,8 @@ oxistore = { path = "crates/oxistore", version = "0.3" }
 oxistore-core = { path = "crates/oxistore-core", version = "0.3" }
 oxistore-encrypt = { path = "crates/oxistore-encrypt", version = "0.3" }
 oxistore-compress = { path = "crates/oxistore-compress", version = "0.3" }
-oxiarc-deflate = { version = "0.4.1" }
-oxiarc-core = { version = "0.4.1" }
+oxiarc-deflate = { version = "0.4.2" }
+oxiarc-core = { version = "0.4.2" }
 oxicrypto = { version = "0.3.0" }
 oxicrypto-sig = { version = "0.3.0" }
 # PKCS#11 HSM adapter — pulled from crates.io (NOT a path dep) to avoid
